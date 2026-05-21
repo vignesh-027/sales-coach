@@ -2,22 +2,42 @@
   "name": "sales-coach",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "db:migrate": "tsx scripts/run-migrations.ts",
+    "trigger:deploy": "trigger.dev@latest deploy"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.96.0",
+    "@aws-sdk/client-s3": "^3.1048.0",
+    "@aws-sdk/s3-request-presigner": "^3.1048.0",
+    "@google/genai": "^2.4.0",
+    "@sentry/nextjs": "^10.53.1",
+    "@supabase/ssr": "^0.10.3",
+    "@supabase/supabase-js": "^2.105.4",
+    "@trigger.dev/sdk": "^4.4.6",
+    "assemblyai": "^4.33.2",
+    "framer-motion": "^12.39.0",
+    "mammoth": "^1.12.0",
     "next": "16.2.6",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "postgres": "^3.4.9",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "tsx": "^4.22.1",
+    "typescript": "^5",
+    "vitest": "^4.1.6"
   }
 }

@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# trigger.dev local artifacts (active runs, build temps)
+/.trigger/
+
+# claude code local config
+/.claude/

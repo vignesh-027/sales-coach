@@ -1,0 +1,7 @@
+[
+  { "id": "budget", "query": "no budget objection" },
+  { "id": "state", "query": "founder talks about state installation" },
+  { "id": "anchor", "query": "anchor to past breakthrough" },
+  { "id": "silence", "query": "silence after price is introduced" },
+  { "id": "vignesh", "query": "Vignesh closing call" }
+]

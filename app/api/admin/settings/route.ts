@@ -1,0 +1,91 @@
+import { NextResponse, type NextRequest } from "next/server";
+import { supabaseServer } from "@/services/supabase/server";
+import { getUserByAuthId } from "@/services/supabase/queries/users";
+import {
+  getAppSettings,
+  updateLlmModel,
+  updateRerankModel,
+} from "@/services/supabase/queries/app-settings";
+import { isAllowedLlmModel, LLM_OPTIONS } from "@/services/anthropic/models";
+import {
+  isAllowedRerankModel,
+  RERANK_OPTIONS,
+} from "@/services/voyage/rerank-models";
+
+export const runtime = "nodejs";
+
+async function requireAdmin() {
+  const supabase = await supabaseServer();
+  const { data } = await supabase.auth.getUser();
+  if (!data.user) return null;
+  const me = await getUserByAuthId(data.user.id);
+  if (!me?.is_admin) return null;
+  return me;
+}
+
+export async function GET() {
+  if (!(await requireAdmin())) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  const settings = await getAppSettings();
+  return NextResponse.json({
+    settings,
+    llm_options: LLM_OPTIONS,
+    rerank_options: RERANK_OPTIONS,
+  });
+}
+
+interface PatchBody {
+  llm_model?: string;
+  rerank_model?: string;
+}
+
+export async function PATCH(req: NextRequest) {
+  const me = await requireAdmin();
+  if (!me) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  let body: PatchBody;
+  try {
+    body = (await req.json()) as PatchBody;
+  } catch {
+    return NextResponse.json({ error: "invalid json" }, { status: 400 });
+  }
+
+  const hasLlm = typeof body.llm_model === "string" && body.llm_model.trim();
+  const hasRerank =
+    typeof body.rerank_model === "string" && body.rerank_model.trim();
+
+  if (!hasLlm && !hasRerank) {
+    return NextResponse.json(
+      { error: "llm_model or rerank_model required" },
+      { status: 400 },
+    );
+  }
+
+  let updated = await getAppSettings();
+
+  if (hasLlm) {
+    if (!isAllowedLlmModel(body.llm_model!)) {
+      return NextResponse.json(
+        { error: `llm_model "${body.llm_model}" is not in the allow-list` },
+        { status: 400 },
+      );
+    }
+    updated = await updateLlmModel(body.llm_model!, me.id);
+  }
+
+  if (hasRerank) {
+    if (!isAllowedRerankModel(body.rerank_model!)) {
+      return NextResponse.json(
+        {
+          error: `rerank_model "${body.rerank_model}" is not in the allow-list`,
+        },
+        { status: 400 },
+      );
+    }
+    updated = await updateRerankModel(body.rerank_model!, me.id);
+  }
+
+  return NextResponse.json({ settings: updated });
+}
