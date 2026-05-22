@@ -71,7 +71,12 @@ jobs:
       - name: Deploy to Trigger.dev (prod)
         env:
           TRIGGER_ACCESS_TOKEN: ${{ secrets.TRIGGER_ACCESS_TOKEN }}
-        run: npx trigger.dev@latest deploy --env prod
+        # Pin the CLI to match @trigger.dev/sdk in package.json (4.4.6).
+        # Using @latest causes auth-flow mismatches with the SDK and
+        # surfaces as a Depot registry 401 at image-push time. See
+        # https://trigger.dev/docs/github-actions
+        # `prod` is the default env — no flag needed.
+        run: npx trigger.dev@4.4.6 deploy
 
   deploy-web:
     needs: [detect-changes, deploy-workers]
