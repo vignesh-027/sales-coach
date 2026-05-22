@@ -1,0 +1,90 @@
+# Sequenced deploy: workers FIRST, then web.
+#
+# Why sequenced (not two parallel channels):
+#   If web ships before workers, the live site enqueues tasks the deployed
+#   workers don't understand → calls upload but never get analyzed. Worker
+#   failures must block the web deploy, not race with it.
+#
+# Flow on every push to main:
+#   1. detect-changes — figure out whether worker-relevant paths changed.
+#   2. deploy-workers — if worker paths changed, deploy to Trigger.dev prod.
+#                       If this step fails, the whole pipeline stops. Web
+#                       is NOT triggered. Production stays on the last
+#                       known-good state.
+#   3. deploy-web     — if (and only if) step 2 succeeded (or was skipped
+#                       cleanly), POST to the Vercel Deploy Hook so Vercel
+#                       builds and ships the web tier.
+#
+# Required repo secrets:
+#   TRIGGER_ACCESS_TOKEN     — PAT from https://cloud.trigger.dev/account/tokens
+#   VERCEL_DEPLOY_HOOK_URL   — Deploy Hook URL from Vercel project Settings
+#                               → Git → Deploy Hooks (branch: main)
+#
+# IMPORTANT: Vercel auto-deploy-on-push must be DISABLED in the dashboard
+# (Settings → Git → toggle off "Auto-deploy on push"), otherwise Vercel will
+# fire its own deploy in parallel and defeat the ordering.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel any in-flight deploy if a newer push lands. The newer push is by
+# definition the canonical state we want in prod.
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      workers: ${{ steps.filter.outputs.workers }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # paths-filter needs the previous commit to diff against
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            workers:
+              - 'worker/**'
+              - 'services/**'
+              - 'trigger.config.ts'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/deploy.yml'
+
+  deploy-workers:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.workers == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - name: Deploy to Trigger.dev (prod)
+        env:
+          TRIGGER_ACCESS_TOKEN: ${{ secrets.TRIGGER_ACCESS_TOKEN }}
+        run: npx trigger.dev@latest deploy --env prod
+
+  deploy-web:
+    needs: [detect-changes, deploy-workers]
+    # Run web deploy if workers deployed successfully OR if workers were
+    # skipped (no worker-relevant changes). NEVER run if workers failed.
+    if: |
+      always() &&
+      (needs.deploy-workers.result == 'success' || needs.deploy-workers.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Vercel deploy
+        run: |
+          echo "Workers status: ${{ needs.deploy-workers.result }}"
+          echo "Triggering Vercel production deploy..."
+          curl -fsSL -X POST "${{ secrets.VERCEL_DEPLOY_HOOK_URL }}"
+          echo "Vercel deploy queued. Track at https://vercel.com/dashboard"
