@@ -71,12 +71,13 @@ jobs:
       - name: Deploy to Trigger.dev (prod)
         env:
           TRIGGER_ACCESS_TOKEN: ${{ secrets.TRIGGER_ACCESS_TOKEN }}
-        # Pin the CLI to match @trigger.dev/sdk in package.json (4.4.6).
-        # Using @latest causes auth-flow mismatches with the SDK and
-        # surfaces as a Depot registry 401 at image-push time. See
-        # https://trigger.dev/docs/github-actions
-        # `prod` is the default env — no flag needed.
-        run: npx trigger.dev@4.4.6 deploy
+        # Pin CLI to 4.0.1 to dodge a known regression in 4.3.0+ that
+        # breaks the registry push step (image builds but push fails with
+        # "anonymous token 401" or silently no-ops). Tracked at
+        # https://github.com/triggerdotdev/trigger.dev/issues/2783
+        # --skip-update-check is required because the CLI otherwise errors
+        # on detecting a newer @trigger.dev/sdk version in package.json.
+        run: npx trigger.dev@4.0.1 deploy --skip-update-check
 
   deploy-web:
     needs: [detect-changes, deploy-workers]
