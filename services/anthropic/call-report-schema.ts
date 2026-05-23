@@ -59,7 +59,10 @@ export interface PlaybookCitation {
   end_ts_ms: number;
 }
 
+export type CallType = "Pre-sale" | "Sale_followup" | "Sale_closing";
+
 export interface CallReport {
+  call_type?: CallType;
   summary: {
     tldr: string;
     outcome: CallOutcome;
@@ -112,6 +115,10 @@ import { z } from "zod";
 // Any change to CALL_REPORT_TOOL must be reflected here, and vice versa.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// All citation fields are strict: the prompt requires the model to copy
+// title / source_type / start_ts_ms / end_ts_ms verbatim from a supplied
+// playbook chunk's metadata. Nothing to invent, nothing to omit. If no
+// supplied chunk fits a rewrite, the rewrite is omitted entirely.
 const PlaybookCitationSchema = z.object({
   title: z.string(),
   source_type: z.enum(["founder_video", "reference_call", "text_document"]),
@@ -132,6 +139,11 @@ const KeyMomentLabelSchema = z.enum([
 ]);
 
 export const CallReportSchema = z.object({
+  // call_type added in PROMPT_VERSION 6. Optional so older reports
+  // (stored before v6) still validate when re-rendered.
+  call_type: z
+    .enum(["Pre-sale", "Sale_followup", "Sale_closing"])
+    .optional(),
   summary: z.object({
     tldr: z.string().min(1),
     outcome: z.enum(["won", "lost", "follow_up_needed", "stalled", "unclear"]),
@@ -192,11 +204,17 @@ export type CallReportValidated = z.infer<typeof CallReportSchema>;
 export const CALL_REPORT_TOOL: Anthropic.Tool = {
   name: "save_call_report",
   description:
-    "Save the structured journey-closing analysis report. Always call this tool exactly once with the full report.",
+    "Save the structured sales-call analysis report. Always call this tool exactly once with the full report, including the call_type classification (Pre-sale, Sale_followup, or Sale_closing).",
   input_schema: {
     type: "object",
     required: ["summary", "key_moments", "rewrites", "patterns"],
     properties: {
+      call_type: {
+        type: "string",
+        enum: ["Pre-sale", "Sale_followup", "Sale_closing"],
+        description:
+          "Classification of this call's place in the journey. Pre-sale = discovery/opening (no commitment ask expected). Sale_followup = middle relationship-deepening call (sets up next call, no close). Sale_closing = the journey-closing call where the state shift and commitment land. Set this BEFORE picking the top-5 rubric keys — the top-5 must be appropriate to this type.",
+      },
       summary: {
         type: "object",
         required: [

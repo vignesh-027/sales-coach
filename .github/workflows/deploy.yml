@@ -77,7 +77,7 @@ jobs:
         # https://github.com/triggerdotdev/trigger.dev/issues/2783
         # --skip-update-check is required because the CLI otherwise errors
         # on detecting a newer @trigger.dev/sdk version in package.json.
-        run: npx trigger.dev@4.0.1 deploy --skip-update-check
+        run: npx trigger.dev@4.4.6 deploy --skip-update-check
 
   deploy-web:
     needs: [detect-changes, deploy-workers]
