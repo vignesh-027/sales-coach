@@ -10,7 +10,7 @@
 
 import { voyageFetch } from "./client";
 import { DEFAULT_RERANK_MODEL } from "./rerank-models";
-import { recordVoyageUsage } from "@/services/supabase/queries/voyage-usage";
+import { recordModelUsage } from "@/services/supabase/queries/model-usage";
 import { costForRerank } from "./pricing";
 
 interface VoyageRerankResponse {
@@ -88,7 +88,8 @@ export async function rerank(
   const data = (await res.json()) as VoyageRerankResponse;
   const tokens = data.usage?.total_tokens ?? 0;
   if (tokens > 0) {
-    void recordVoyageUsage({
+    void recordModelUsage({
+      provider: "voyage",
       kind: "rerank",
       model: data.model,
       tokens,

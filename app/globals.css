@@ -1696,6 +1696,59 @@ button.combo-row.add-new .plus {
   cursor: progress;
 }
 
+/* ============ SETTINGS LAYOUT (sidebar + content) ============ */
+.settings-shell { max-width: none; padding-left: 48px; padding-right: 48px; }
+.settings-shell .page-head { margin-bottom: 24px; }
+.settings-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 40px;
+  align-items: start;
+}
+.settings-sidebar {
+  position: sticky;
+  top: 130px;
+  font-family: var(--font-dm-sans), sans-serif;
+}
+.settings-sidebar ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-sidebar-item {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 13.5px;
+  color: var(--ink-2);
+  text-decoration: none;
+  border: 0.5px solid transparent;
+  transition: background 120ms, color 120ms, border-color 120ms;
+}
+.settings-sidebar-item:hover {
+  color: var(--ink-1);
+  background: var(--surface-1);
+}
+.settings-sidebar-item.is-active {
+  color: var(--ink-1);
+  background: color-mix(in srgb, var(--accent-2) 18%, transparent);
+  border-color: var(--accent);
+  font-weight: 500;
+}
+.settings-sidebar-item.is-active:hover {
+  background: color-mix(in srgb, var(--accent-2) 24%, transparent);
+}
+.settings-content { min-width: 0; }
+.settings-content .settings-tiles { margin-top: 0; }
+@media (max-width: 780px) {
+  .settings-layout { grid-template-columns: 1fr; gap: 20px; }
+  .settings-sidebar { position: static; top: auto; }
+  .settings-sidebar ul { flex-direction: row; flex-wrap: wrap; }
+}
+
 /* ============ ADMIN USERS TABLE ============ */
 .admin-table-wrap { margin-top: 24px; overflow-x: auto; }
 .admin-table {
@@ -1719,6 +1772,10 @@ button.combo-row.add-new .plus {
   border-bottom: 0.5px solid var(--hair);
   vertical-align: middle;
   color: var(--ink-1);
+  transition: background 120ms ease-out;
+}
+.admin-table tbody tr:hover td {
+  background: color-mix(in srgb, var(--accent-2) 8%, transparent);
 }
 .uline-inline {
   background: transparent;
@@ -1752,7 +1809,71 @@ button.combo-row.add-new .plus {
   align-items: center;
   gap: 8px;
 }
-.email-cell .uline-inline { flex: 1; min-width: 120px; }
+.email-cell .uline-inline {
+  flex: 1;
+  min-width: 260px;
+  width: 100%;
+  white-space: nowrap;
+  text-overflow: clip;
+  overflow: visible;
+}
+.admin-table th:nth-child(2),
+.admin-table td:nth-child(2) {
+  min-width: 280px;
+  white-space: nowrap;
+}
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+.row-actions .btn,
+.row-actions .btn-danger {
+  height: 28px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  margin: 0;
+}
+.admin-table th:last-child,
+.admin-table td:last-child {
+  white-space: nowrap;
+  width: 1%;
+}
+
+/* Editable cell affordance — placeholder + hover pencil */
+.editable-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+.editable-cell .uline-inline,
+.email-cell .uline-inline {
+  cursor: text;
+}
+.editable-cell .uline-inline::placeholder,
+.email-cell .uline-inline::placeholder {
+  color: var(--ink-2);
+  opacity: 0.5;
+  font-style: italic;
+}
+.edit-pencil {
+  flex: 0 0 auto;
+  color: var(--ink-2);
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.admin-table tr:hover .edit-pencil,
+.editable-cell:focus-within .edit-pencil,
+.email-cell:focus-within .edit-pencil {
+  opacity: 0.7;
+}
+.email-cell.is-locked .edit-pencil { display: none; }
 .email-cell-acts {
   display: inline-flex;
   gap: 4px;

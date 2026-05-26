@@ -18,7 +18,7 @@ import {
   VOYAGE_EMBEDDING_MODEL,
   type VoyageEmbedResponse,
 } from "./client";
-import { recordVoyageUsage } from "@/services/supabase/queries/voyage-usage";
+import { recordModelUsage } from "@/services/supabase/queries/model-usage";
 import { costForEmbed } from "./pricing";
 
 const BATCH = 128;
@@ -124,7 +124,8 @@ export async function embedBatch(
 
   // Best-effort usage capture — never block on it.
   if (totalTokens > 0) {
-    void recordVoyageUsage({
+    void recordModelUsage({
+      provider: "voyage",
       kind: "embed",
       model: VOYAGE_EMBEDDING_MODEL,
       tokens: totalTokens,

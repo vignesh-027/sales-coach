@@ -62,3 +62,16 @@ export function isAllowedLlmModel(model: string): boolean {
 export function findLlmOption(model: string): LlmOption | undefined {
   return LLM_OPTIONS.find((o) => o.id === model);
 }
+
+export function costForLlm(
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+): number {
+  const opt = findLlmOption(model);
+  if (!opt) return 0;
+  return (
+    (opt.cost_per_mtok_input * inputTokens) / 1_000_000 +
+    (opt.cost_per_mtok_output * outputTokens) / 1_000_000
+  );
+}

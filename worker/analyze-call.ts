@@ -9,6 +9,8 @@ import {
 import { getTranscript } from "@/services/supabase/queries/transcripts";
 import { hybridSearchKnowledge } from "@/services/supabase/queries/knowledge-chunks";
 import { upsertCallReport } from "@/services/supabase/queries/call-reports";
+import { recordModelUsage } from "@/services/supabase/queries/model-usage";
+import { costForLlm } from "@/services/anthropic/models";
 import { embedBatch } from "@/services/voyage/embed";
 import { rerank } from "@/services/voyage/rerank";
 import { getRerankModel } from "@/services/supabase/queries/app-settings";
@@ -230,6 +232,24 @@ export const analyzeCall = task({
         report: result.report,
         input_tokens: result.input_tokens,
         output_tokens: result.output_tokens,
+      });
+
+      // Mirror Claude usage into the unified model_usage ledger so /observability
+      // can roll up tokens + cost across all providers for a calendar month.
+      void recordModelUsage({
+        provider: "anthropic",
+        kind: "llm",
+        model: result.model,
+        input_tokens: result.input_tokens,
+        output_tokens: result.output_tokens,
+        tokens: result.input_tokens + result.output_tokens,
+        cost_usd: costForLlm(
+          result.model,
+          result.input_tokens,
+          result.output_tokens,
+        ),
+        scope: "analyze_call",
+        scope_id: payload.callId,
       });
 
       await updateCallStatus(payload.callId, { process_status: "done" });

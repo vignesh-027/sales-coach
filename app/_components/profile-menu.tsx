@@ -74,17 +74,17 @@ export function ProfileMenu({
             {user.email && <div className="dd-email">{user.email}</div>}
           </div>
           <div className="dd-divider" />
-          {/* Manage Users is admin-only. For non-admins we render the same
-              link as a visually-hidden placeholder so the dropdown's height
-              and alignment stay identical regardless of role. */}
+          {/* Settings is admin-only today (both subsections require admin).
+              For non-admins we render a visually-hidden placeholder so the
+              dropdown's height and alignment stay identical regardless of role. */}
           {user.isAdmin ? (
             <Link
               className="dd-item"
               role="menuitem"
-              href="/admin/users"
+              href="/settings/configuration"
               onClick={() => setOpen(false)}
             >
-              Manage Users
+              Settings
             </Link>
           ) : (
             <span
@@ -92,14 +92,14 @@ export function ProfileMenu({
               aria-hidden="true"
               style={{ visibility: "hidden" }}
             >
-              Manage Users
+              Settings
             </span>
           )}
           {/* Observability is read-only and open to all signed-in users. */}
           <Link
             className="dd-item"
             role="menuitem"
-            href="/admin/observability"
+            href="/observability"
             onClick={() => setOpen(false)}
           >
             Observability

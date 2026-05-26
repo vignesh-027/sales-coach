@@ -181,7 +181,7 @@ export default function CallDetailClient({
   const searchParams = useSearchParams();
   const backHref =
     searchParams?.get("from") === "observability"
-      ? "/admin/observability"
+      ? "/observability"
       : "/calls";
   const [data, setData] = useState<CallDTO | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);

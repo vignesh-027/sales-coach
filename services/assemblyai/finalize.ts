@@ -14,6 +14,7 @@ import {
   type KnowledgeItem,
 } from "@/services/supabase/queries/knowledge-items";
 import { insertTranscript } from "@/services/supabase/queries/transcripts";
+import { recordAssemblyAiUsage } from "./usage";
 
 export type FinalizeOutcome =
   | "completed"
@@ -56,10 +57,19 @@ export async function finalizeCallRecording(
     segments: t.segments,
   });
 
+  const durationSec = t.durationSec ? Math.round(t.durationSec) : null;
   await updateRecording(rec.id, {
     transcribe_status: "done",
-    duration_sec: t.durationSec ? Math.round(t.durationSec) : null,
+    duration_sec: durationSec,
   });
+
+  if (durationSec && durationSec > 0) {
+    void recordAssemblyAiUsage({
+      durationSec,
+      scope: "transcribe_call",
+      scopeId: rec.call_id,
+    });
+  }
 
   if (await allRecordingsDone(rec.call_id)) {
     await updateCallStatus(rec.call_id, { process_status: "embedding" });
@@ -107,10 +117,19 @@ export async function finalizeKnowledgeItem(
     segments: t.segments,
   });
 
+  const knowledgeDurationSec = t.durationSec ? Math.round(t.durationSec) : null;
   await updateKnowledgeStatus(item.id, {
     process_status: "embedding",
-    duration_sec: t.durationSec ? Math.round(t.durationSec) : null,
+    duration_sec: knowledgeDurationSec,
   });
+
+  if (knowledgeDurationSec && knowledgeDurationSec > 0) {
+    void recordAssemblyAiUsage({
+      durationSec: knowledgeDurationSec,
+      scope: "transcribe_knowledge",
+      scopeId: item.id,
+    });
+  }
 
   await tasks.trigger<
     typeof import("@/worker/embed-transcript").embedTranscript
