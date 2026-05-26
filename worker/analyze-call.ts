@@ -38,6 +38,18 @@ export const analyzeCall = task({
   id: "analyze-call",
   retry: { maxAttempts: 2 },
   maxDuration: 600,
+  // Terminal-state writer after retries exhausted. Catches anything the
+  // inner try/catch misses (import-time crash, throw before try, etc).
+  onFailure: async ({ payload, error }) => {
+    try {
+      await updateCallStatus(payload.callId, {
+        process_status: "failed",
+        process_error: `analysis failed: ${formatError(error)}`,
+      });
+    } catch (writeErr) {
+      console.error("[analyze-call.onFailure] DB write failed", writeErr);
+    }
+  },
   run: async (payload: AnalyzeCallPayload) => {
     const call = await getCall(payload.callId);
     if (!call) throw new Error(`call ${payload.callId} not found`);

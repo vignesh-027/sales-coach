@@ -21,6 +21,25 @@ export interface IngestCallRecordingPayload {
 export const ingestCallRecording = task({
   id: "ingest-call-recording",
   retry: { maxAttempts: 3 },
+  // Last-resort terminal-state writer. Runs once after all retries are
+  // exhausted, regardless of where the failure happened (import-time crash,
+  // throw before the inner try/catch, OOM, etc). Guarantees the DB reflects
+  // reality so the UI never shows a phantom "transcribing" status.
+  onFailure: async ({ payload, error }) => {
+    const msg = formatError(error);
+    try {
+      await updateRecording(payload.recordingId, {
+        transcribe_status: "failed",
+        transcribe_error: msg,
+      });
+      await updateCallStatus(payload.callId, {
+        process_status: "failed",
+        process_error: `ingest failed: ${msg}`,
+      });
+    } catch (writeErr) {
+      console.error("[ingest-call-recording.onFailure] DB write failed", writeErr);
+    }
+  },
   run: async (payload: IngestCallRecordingPayload) => {
     const rec = await getRecording(payload.recordingId);
     if (!rec) throw new Error(`call_recording ${payload.recordingId} not found`);
