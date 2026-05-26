@@ -12,6 +12,14 @@ export interface CallRecording {
   source_format: CallSourceFormat;
   duration_sec: number | null;
   assemblyai_transcript_id: string | null;
+  runpod_job_id: string | null;
+  /**
+   * Full transcription model id chosen at submit time, e.g.
+   * `"assemblyai/universal-2"` or `"runpod/whisperx-turbo"`. Lets us
+   * attribute usage rows to the right model after the user toggles the
+   * setting. Null on legacy rows from before the transcription switch.
+   */
+  transcription_provider: string | null;
   webhook_secret: string;
   transcribe_status: RecordingStatus;
   transcribe_error: string | null;
@@ -65,6 +73,18 @@ export async function getRecordingByTranscriptId(
   return (data as CallRecording) ?? null;
 }
 
+export async function getRecordingByRunPodJobId(
+  jobId: string,
+): Promise<CallRecording | null> {
+  const { data, error } = await supabaseAdmin()
+    .from("call_recordings")
+    .select("*")
+    .eq("runpod_job_id", jobId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as CallRecording) ?? null;
+}
+
 export async function listRecordings(callId: string): Promise<CallRecording[]> {
   const { data, error } = await supabaseAdmin()
     .from("call_recordings")
@@ -83,6 +103,8 @@ export async function updateRecording(
       | "transcribe_status"
       | "transcribe_error"
       | "assemblyai_transcript_id"
+      | "runpod_job_id"
+      | "transcription_provider"
       | "duration_sec"
     >
   >,

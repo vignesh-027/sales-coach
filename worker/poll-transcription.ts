@@ -1,10 +1,11 @@
 import { task, tasks } from "./client";
 import {
-  finalizeCallRecording,
-  finalizeKnowledgeItem,
-} from "@/services/assemblyai/finalize";
+  finalizeCallTranscription,
+  finalizeKnowledgeTranscription,
+  type TranscriptionProviderKind,
+} from "@/services/transcription/finalize";
 
-// Webhook is the happy path. This task is the fallback: if AssemblyAI's
+// Webhook is the happy path. This task is the fallback: if the provider's
 // webhook never reaches us (local dev with no tunnel, dropped POST, etc.),
 // we still discover terminal state and write the outcome.
 
@@ -13,9 +14,13 @@ export type PollTarget =
   | { kind: "knowledge_item"; itemId: string };
 
 export interface PollTranscriptionPayload {
-  transcriptId: string;
+  provider: TranscriptionProviderKind;
+  providerId: string;
   target: PollTarget;
   attempt?: number;
+  // Back-compat for in-flight payloads from the AAI-only era. If present
+  // and `providerId` is missing, treat the value as the AAI transcript id.
+  transcriptId?: string;
 }
 
 const MAX_ATTEMPTS = 20; // 20 × 90s ≈ 30 min ceiling
@@ -28,16 +33,27 @@ export const pollTranscription = task({
   maxDuration: 120,
   run: async (payload: PollTranscriptionPayload) => {
     const attempt = payload.attempt ?? 1;
+    const provider: TranscriptionProviderKind =
+      payload.provider ?? "assemblyai";
+    const providerId =
+      payload.providerId ?? (payload.transcriptId as string | undefined) ?? "";
+
+    if (!providerId) {
+      throw new Error("poll-transcription: missing providerId / transcriptId");
+    }
+
     const outcome =
       payload.target.kind === "call_recording"
-        ? await finalizeCallRecording(
-            payload.target.recordingId,
-            payload.transcriptId,
-          )
-        : await finalizeKnowledgeItem(
-            payload.target.itemId,
-            payload.transcriptId,
-          );
+        ? await finalizeCallTranscription({
+            recordingOrId: payload.target.recordingId,
+            provider,
+            providerId,
+          })
+        : await finalizeKnowledgeTranscription({
+            itemOrId: payload.target.itemId,
+            provider,
+            providerId,
+          });
 
     if (outcome !== "still_processing") {
       return { attempt, outcome };
@@ -83,7 +99,7 @@ export const pollTranscription = task({
 
     await tasks.trigger<typeof pollTranscription>(
       "poll-transcription",
-      { ...payload, attempt: attempt + 1 },
+      { ...payload, provider, providerId, attempt: attempt + 1 },
       { delay: `${SUBSEQUENT_DELAY_S}s` },
     );
     return { attempt, outcome };

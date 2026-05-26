@@ -10,12 +10,15 @@ import { supabaseAdmin } from "../client-admin";
 export interface AppSettings {
   llm_model: string;
   rerank_model: string;
+  transcription_model: string;
   updated_at: string;
   updated_by: string | null;
 }
 
 const SETTINGS_ID = "global";
 const CACHE_TTL_MS = 5 * 60 * 1000;
+const SELECT_COLS =
+  "llm_model, rerank_model, transcription_model, updated_at, updated_by";
 
 let cache: { value: AppSettings; expiresAt: number } | null = null;
 
@@ -29,7 +32,7 @@ export async function getAppSettings(): Promise<AppSettings> {
   const s = supabaseAdmin();
   const { data, error } = await s
     .from("app_settings")
-    .select("llm_model, rerank_model, updated_at, updated_by")
+    .select(SELECT_COLS)
     .eq("id", SETTINGS_ID)
     .single();
 
@@ -55,7 +58,7 @@ export async function updateLlmModel(
     .from("app_settings")
     .update({ llm_model: model, updated_by: userId })
     .eq("id", SETTINGS_ID)
-    .select("llm_model, rerank_model, updated_at, updated_by")
+    .select(SELECT_COLS)
     .single();
 
   if (error) {
@@ -74,11 +77,30 @@ export async function updateRerankModel(
     .from("app_settings")
     .update({ rerank_model: model, updated_by: userId })
     .eq("id", SETTINGS_ID)
-    .select("llm_model, rerank_model, updated_at, updated_by")
+    .select(SELECT_COLS)
     .single();
 
   if (error) {
     throw new Error(`failed to update rerank_model: ${error.message}`);
+  }
+  clearAppSettingsCache();
+  return data as AppSettings;
+}
+
+export async function updateTranscriptionModel(
+  model: string,
+  userId: string | null,
+): Promise<AppSettings> {
+  const s = supabaseAdmin();
+  const { data, error } = await s
+    .from("app_settings")
+    .update({ transcription_model: model, updated_by: userId })
+    .eq("id", SETTINGS_ID)
+    .select(SELECT_COLS)
+    .single();
+
+  if (error) {
+    throw new Error(`failed to update transcription_model: ${error.message}`);
   }
   clearAppSettingsCache();
   return data as AppSettings;

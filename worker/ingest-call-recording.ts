@@ -1,6 +1,6 @@
 import { task, tasks } from "./client";
 import { signedGetUrl } from "@/services/r2/signed-url";
-import { submitTranscription } from "@/services/assemblyai/transcribe";
+import { submitTranscription } from "@/services/transcription/dispatch";
 import {
   getRecording,
   updateRecording,
@@ -35,28 +35,35 @@ export const ingestCallRecording = task({
     const webhookUrl = `${payload.webhookBaseUrl}/api/calls/transcription-callback`;
 
     try {
-      const { transcriptId } = await submitTranscription({
+      const { provider, providerId, modelId } = await submitTranscription({
         audioUrl,
         webhookUrl,
         webhookSecret: rec.webhook_secret,
       });
+
+      // Store both: the provider-specific id (for the webhook lookup) and
+      // the full model id (for usage attribution at finalize time).
       await updateRecording(rec.id, {
-        assemblyai_transcript_id: transcriptId,
+        transcription_provider: modelId,
+        ...(provider === "assemblyai"
+          ? { assemblyai_transcript_id: providerId }
+          : { runpod_job_id: providerId }),
       });
 
       // Webhook is the happy path; this poller is the fallback in case the
       // webhook never arrives (local dev with no tunnel, dropped delivery,
-      // AAI hang). Idempotent against the webhook via finalize() checks.
+      // provider hang). Idempotent against the webhook via finalize() checks.
       await tasks.trigger<typeof pollTranscription>(
         "poll-transcription",
         {
-          transcriptId,
+          provider,
+          providerId,
           target: { kind: "call_recording", recordingId: rec.id },
         },
         { delay: POLL_INITIAL_DELAY },
       );
 
-      return { transcriptId };
+      return { provider, providerId, modelId };
     } catch (err) {
       const msg = formatError(err);
       await updateRecording(rec.id, {

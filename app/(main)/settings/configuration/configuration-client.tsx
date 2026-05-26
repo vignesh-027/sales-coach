@@ -19,6 +19,15 @@ interface RerankOptionView {
   cost_per_mtok: number;
 }
 
+interface TranscriptionOptionView {
+  id: string;
+  label: string;
+  description: string;
+  provider: "assemblyai" | "runpod";
+  tier: "paid";
+  cost_per_hr_audio: number;
+}
+
 interface EmbeddingInfo {
   provider: string;
   model: string;
@@ -29,24 +38,36 @@ interface EmbeddingInfo {
 export function ConfigurationClient({
   initialLlmModel,
   initialRerankModel,
+  initialTranscriptionModel,
   llmOptions,
   rerankOptions,
+  transcriptionOptions,
   embedding,
 }: {
   initialLlmModel: string;
   initialRerankModel: string;
+  initialTranscriptionModel: string;
   llmOptions: LlmOptionView[];
   rerankOptions: RerankOptionView[];
+  transcriptionOptions: TranscriptionOptionView[];
   embedding: EmbeddingInfo;
 }) {
   const [llmModel, setLlmModel] = useState(initialLlmModel);
   const [rerankModel, setRerankModel] = useState(initialRerankModel);
+  const [transcriptionModel, setTranscriptionModel] = useState(
+    initialTranscriptionModel,
+  );
   const [savingLlm, setSavingLlm] = useState(false);
   const [savingRerank, setSavingRerank] = useState(false);
+  const [savingTranscription, setSavingTranscription] = useState(false);
   const [errLlm, setErrLlm] = useState<string | null>(null);
   const [errRerank, setErrRerank] = useState<string | null>(null);
+  const [errTranscription, setErrTranscription] = useState<string | null>(null);
   const selected = llmOptions.find((o) => o.id === llmModel);
   const selectedRerank = rerankOptions.find((o) => o.id === rerankModel);
+  const selectedTranscription = transcriptionOptions.find(
+    (o) => o.id === transcriptionModel,
+  );
 
   async function patchSettings(body: Record<string, string>): Promise<void> {
     const res = await fetch("/api/admin/settings", {
@@ -93,6 +114,21 @@ export function ConfigurationClient({
     }
   }
 
+  async function onChangeTranscription(next: string) {
+    const prev = transcriptionModel;
+    setTranscriptionModel(next);
+    setErrTranscription(null);
+    setSavingTranscription(true);
+    try {
+      await patchSettings({ transcription_model: next });
+    } catch (e) {
+      setTranscriptionModel(prev);
+      setErrTranscription(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingTranscription(false);
+    }
+  }
+
   return (
     <section className="settings-tiles">
       <div className="settings-tile">
@@ -107,6 +143,47 @@ export function ConfigurationClient({
           <div className="settings-tile-value">{embedding.model}</div>
           <div className="settings-tile-meta">
             {embedding.provider} · {embedding.dim}-d · {embedding.notes}
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-tile">
+        <div className="settings-tile-left">
+          <h3>Transcription engine</h3>
+          <p>
+            Provider used to transcribe call audio and knowledge sources.
+            Switch anytime; the next upload picks it up. Existing
+            transcripts are not re-run.
+          </p>
+          {selectedTranscription && (
+            <p className="settings-tile-modelnote">
+              {selectedTranscription.description} ·{" "}
+              {selectedTranscription.tier} · $
+              {selectedTranscription.cost_per_hr_audio.toFixed(3)}/hr audio
+              (estimated)
+            </p>
+          )}
+          {errTranscription && (
+            <p className="err-text" style={{ marginTop: 8 }}>
+              {errTranscription}
+            </p>
+          )}
+        </div>
+        <div className="settings-tile-right">
+          <select
+            className="settings-select"
+            value={transcriptionModel}
+            disabled={savingTranscription}
+            onChange={(e) => void onChangeTranscription(e.target.value)}
+          >
+            {transcriptionOptions.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <div className="settings-tile-meta">
+            {savingTranscription ? "saving…" : "saved"}
           </div>
         </div>
       </div>

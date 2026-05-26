@@ -1,6 +1,6 @@
 import { task, tasks } from "./client";
 import { signedGetUrl } from "@/services/r2/signed-url";
-import { submitTranscription } from "@/services/assemblyai/transcribe";
+import { submitTranscription } from "@/services/transcription/dispatch";
 import {
   getKnowledgeItem,
   updateKnowledgeStatus,
@@ -29,25 +29,29 @@ export const ingestKnowledge = task({
     const webhookUrl = `${payload.webhookBaseUrl}/api/transcription-callback`;
 
     try {
-      const { transcriptId } = await submitTranscription({
+      const { provider, providerId, modelId } = await submitTranscription({
         audioUrl,
         webhookUrl,
         webhookSecret: item.webhook_secret,
       });
       await updateKnowledgeStatus(item.id, {
-        assemblyai_transcript_id: transcriptId,
+        transcription_provider: modelId,
+        ...(provider === "assemblyai"
+          ? { assemblyai_transcript_id: providerId }
+          : { runpod_job_id: providerId }),
       });
 
       await tasks.trigger<typeof pollTranscription>(
         "poll-transcription",
         {
-          transcriptId,
+          provider,
+          providerId,
           target: { kind: "knowledge_item", itemId: item.id },
         },
         { delay: POLL_INITIAL_DELAY },
       );
 
-      return { transcriptId };
+      return { provider, providerId, modelId };
     } catch (err) {
       await updateKnowledgeStatus(item.id, {
         process_status: "failed",

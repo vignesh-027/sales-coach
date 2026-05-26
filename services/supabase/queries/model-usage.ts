@@ -4,7 +4,7 @@
 
 import { supabaseAdmin } from "../client-admin";
 
-export type UsageProvider = "voyage" | "anthropic" | "assemblyai";
+export type UsageProvider = "voyage" | "anthropic" | "assemblyai" | "runpod";
 export type UsageKind = "embed" | "rerank" | "llm" | "transcribe";
 export type UsageScope =
   | "analyze_call"

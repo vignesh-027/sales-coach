@@ -2,16 +2,21 @@ import { aaiFetch } from "./client";
 
 export const WEBHOOK_HEADER_NAME = "x-aai-secret";
 
+export type AaiSpeechModel = "universal-2" | "universal-3-pro";
+
 export async function submitTranscription(input: {
   audioUrl: string;
+  /** AAI speech_models entry — defaults to universal-2 for back-compat. */
+  model?: AaiSpeechModel;
   webhookUrl: string;
   webhookSecret: string;
 }): Promise<{ transcriptId: string }> {
+  const model: AaiSpeechModel = input.model ?? "universal-2";
   const res = await aaiFetch("/transcript", {
     method: "POST",
     body: JSON.stringify({
       audio_url: input.audioUrl,
-      speech_models: ["universal-2"],
+      speech_models: [model],
       speaker_labels: true,
       // Multilingual support: handle mixed-language utterances (e.g. Tamil/
       // Hindi/English code-switching) across AssemblyAI's 99 supported

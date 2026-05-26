@@ -24,6 +24,9 @@ export interface KnowledgeItem {
   process_status: ProcessStatus;
   process_error: string | null;
   assemblyai_transcript_id: string | null;
+  runpod_job_id: string | null;
+  /** Full transcription model id, e.g. "assemblyai/universal-2". */
+  transcription_provider: string | null;
   webhook_secret: string;
   created_by: string | null;
   created_at: string;
@@ -81,12 +84,29 @@ export async function getKnowledgeItemByTranscriptId(
   return (data as KnowledgeItem) ?? null;
 }
 
+export async function getKnowledgeItemByRunPodJobId(
+  jobId: string,
+): Promise<KnowledgeItem | null> {
+  const { data, error } = await supabaseAdmin()
+    .from("knowledge_items")
+    .select("*")
+    .eq("runpod_job_id", jobId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as KnowledgeItem) ?? null;
+}
+
 export async function updateKnowledgeStatus(
   id: string,
   patch: Partial<
     Pick<
       KnowledgeItem,
-      "process_status" | "process_error" | "assemblyai_transcript_id" | "duration_sec"
+      | "process_status"
+      | "process_error"
+      | "assemblyai_transcript_id"
+      | "runpod_job_id"
+      | "transcription_provider"
+      | "duration_sec"
     >
   >,
 ): Promise<void> {

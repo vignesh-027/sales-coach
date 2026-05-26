@@ -5,12 +5,17 @@ import {
   getAppSettings,
   updateLlmModel,
   updateRerankModel,
+  updateTranscriptionModel,
 } from "@/services/supabase/queries/app-settings";
 import { isAllowedLlmModel, LLM_OPTIONS } from "@/services/anthropic/models";
 import {
   isAllowedRerankModel,
   RERANK_OPTIONS,
 } from "@/services/voyage/rerank-models";
+import {
+  isAllowedTranscriptionModel,
+  TRANSCRIPTION_OPTIONS,
+} from "@/services/transcription/models";
 
 export const runtime = "nodejs";
 
@@ -32,12 +37,14 @@ export async function GET() {
     settings,
     llm_options: LLM_OPTIONS,
     rerank_options: RERANK_OPTIONS,
+    transcription_options: TRANSCRIPTION_OPTIONS,
   });
 }
 
 interface PatchBody {
   llm_model?: string;
   rerank_model?: string;
+  transcription_model?: string;
 }
 
 export async function PATCH(req: NextRequest) {
@@ -55,10 +62,16 @@ export async function PATCH(req: NextRequest) {
   const hasLlm = typeof body.llm_model === "string" && body.llm_model.trim();
   const hasRerank =
     typeof body.rerank_model === "string" && body.rerank_model.trim();
+  const hasTranscription =
+    typeof body.transcription_model === "string" &&
+    body.transcription_model.trim();
 
-  if (!hasLlm && !hasRerank) {
+  if (!hasLlm && !hasRerank && !hasTranscription) {
     return NextResponse.json(
-      { error: "llm_model or rerank_model required" },
+      {
+        error:
+          "llm_model, rerank_model, or transcription_model required",
+      },
       { status: 400 },
     );
   }
@@ -85,6 +98,18 @@ export async function PATCH(req: NextRequest) {
       );
     }
     updated = await updateRerankModel(body.rerank_model!, me.id);
+  }
+
+  if (hasTranscription) {
+    if (!isAllowedTranscriptionModel(body.transcription_model!)) {
+      return NextResponse.json(
+        {
+          error: `transcription_model "${body.transcription_model}" is not in the allow-list`,
+        },
+        { status: 400 },
+      );
+    }
+    updated = await updateTranscriptionModel(body.transcription_model!, me.id);
   }
 
   return NextResponse.json({ settings: updated });
