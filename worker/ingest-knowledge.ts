@@ -19,6 +19,20 @@ export interface IngestKnowledgePayload {
 export const ingestKnowledge = task({
   id: "ingest-knowledge",
   retry: { maxAttempts: 3 },
+  // Last-resort terminal-state writer. Runs once after all retries are
+  // exhausted, regardless of where the failure happened (import-time crash,
+  // throw before the inner try/catch, OOM, etc). Guarantees the DB reflects
+  // reality so the UI never shows a phantom "transcribing" status.
+  onFailure: async ({ payload, error }) => {
+    try {
+      await updateKnowledgeStatus(payload.knowledgeItemId, {
+        process_status: "failed",
+        process_error: `ingest failed: ${formatError(error)}`,
+      });
+    } catch (writeErr) {
+      console.error("[ingest-knowledge.onFailure] DB write failed", writeErr);
+    }
+  },
   run: async (payload: IngestKnowledgePayload) => {
     const item = await getKnowledgeItem(payload.knowledgeItemId);
     if (!item) throw new Error(`knowledge_item ${payload.knowledgeItemId} not found`);

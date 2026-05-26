@@ -28,5 +28,5 @@ alter table calls
 -- 5) Seed bootstrap admin. auth_user_id stays null until first Google sign-in.
 insert into users (email, name, role, is_admin)
 values ('vignesh.s@soexcellence.com', 'Vignesh S', 'admin', true)
-on conflict ((lower(name)))
-do update set is_admin = true, role = 'admin', email = excluded.email;
+on conflict ((lower(email))) where email is not null
+do update set is_admin = true, role = 'admin', name = excluded.name;

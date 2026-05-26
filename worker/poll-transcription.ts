@@ -4,6 +4,7 @@ import {
   finalizeKnowledgeTranscription,
   type TranscriptionProviderKind,
 } from "@/services/transcription/finalize";
+import { formatError } from "@/services/format-error";
 
 // Webhook is the happy path. This task is the fallback: if the provider's
 // webhook never reaches us (local dev with no tunnel, dropped POST, etc.),
@@ -31,6 +32,45 @@ export const pollTranscription = task({
   id: "poll-transcription",
   retry: { maxAttempts: 2 },
   maxDuration: 120,
+  // After retries exhausted, force the target row into a terminal state so
+  // the UI doesn't sit on "transcribing" forever.
+  onFailure: async ({ payload, error }) => {
+    const msg = `poll failed: ${formatError(error)}`;
+    try {
+      if (payload.target.kind === "call_recording") {
+        const { updateRecording, getRecording } = await import(
+          "@/services/supabase/queries/call-recordings"
+        );
+        const { updateCallStatus } = await import(
+          "@/services/supabase/queries/calls"
+        );
+        const rec = await getRecording(payload.target.recordingId);
+        if (rec && rec.transcribe_status !== "done") {
+          await updateRecording(rec.id, {
+            transcribe_status: "failed",
+            transcribe_error: msg,
+          });
+          await updateCallStatus(rec.call_id, {
+            process_status: "failed",
+            process_error: `recording ${rec.recording_index}: ${msg}`,
+          });
+        }
+      } else {
+        const { updateKnowledgeStatus, getKnowledgeItem } = await import(
+          "@/services/supabase/queries/knowledge-items"
+        );
+        const item = await getKnowledgeItem(payload.target.itemId);
+        if (item && item.process_status !== "done") {
+          await updateKnowledgeStatus(item.id, {
+            process_status: "failed",
+            process_error: msg,
+          });
+        }
+      }
+    } catch (writeErr) {
+      console.error("[poll-transcription.onFailure] DB write failed", writeErr);
+    }
+  },
   run: async (payload: PollTranscriptionPayload) => {
     const attempt = payload.attempt ?? 1;
     const provider: TranscriptionProviderKind =

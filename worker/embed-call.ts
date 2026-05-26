@@ -13,6 +13,18 @@ export interface EmbedCallPayload {
 export const embedCall = task({
   id: "embed-call",
   retry: { maxAttempts: 3 },
+  // Terminal-state writer after retries exhausted. Catches anything the
+  // inner try/catch misses (import-time crash, throw before try, etc).
+  onFailure: async ({ payload, error }) => {
+    try {
+      await updateCallStatus(payload.callId, {
+        process_status: "failed",
+        process_error: `embedding failed: ${formatError(error)}`,
+      });
+    } catch (writeErr) {
+      console.error("[embed-call.onFailure] DB write failed", writeErr);
+    }
+  },
   run: async (payload: EmbedCallPayload) => {
     await updateCallStatus(payload.callId, {
       process_status: "embedding",

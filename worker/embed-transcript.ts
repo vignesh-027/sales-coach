@@ -16,6 +16,20 @@ export interface EmbedTranscriptPayload {
 export const embedTranscript = task({
   id: "embed-transcript",
   retry: { maxAttempts: 3 },
+  // Last-resort terminal-state writer. Runs once after all retries are
+  // exhausted, regardless of where the failure happened (import-time crash,
+  // throw before the inner try/catch, OOM, etc). Guarantees the DB reflects
+  // reality so the UI never shows a phantom "embedding" status.
+  onFailure: async ({ payload, error }) => {
+    try {
+      await updateKnowledgeStatus(payload.knowledgeItemId, {
+        process_status: "failed",
+        process_error: `embedding failed: ${formatError(error)}`,
+      });
+    } catch (writeErr) {
+      console.error("[embed-transcript.onFailure] DB write failed", writeErr);
+    }
+  },
   run: async (payload: EmbedTranscriptPayload) => {
     const item = await getKnowledgeItem(payload.knowledgeItemId);
     if (!item) throw new Error(`item ${payload.knowledgeItemId} not found`);
