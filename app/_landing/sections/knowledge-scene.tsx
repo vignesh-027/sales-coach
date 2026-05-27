@@ -98,8 +98,14 @@ function KNode({ node, index, size }: { node: Node; index: number; size: number 
   const angleRad = (node.angle * Math.PI) / 180;
   const tx = cx + Math.cos(angleRad) * r;
   const ty = cy + Math.sin(angleRad) * r;
-  const dx = Math.cos(angleRad) * r * 0.4;
-  const dy = Math.sin(angleRad) * r * 0.4;
+  // Round to a fixed precision so the inline style string is byte-identical
+  // between SSR and client render. Raw float output differs in trailing digits
+  // across the framer-motion + Turbopack SSR path and trips a hydration
+  // mismatch warning even though the visual position is the same.
+  const txStr = `${tx.toFixed(3)}px`;
+  const tyStr = `${ty.toFixed(3)}px`;
+  const dx = Number(Math.cos(angleRad) * r * 0.4).toFixed(3);
+  const dy = Number(Math.sin(angleRad) * r * 0.4).toFixed(3);
 
   const className =
     "lp-k-node" +
@@ -110,14 +116,14 @@ function KNode({ node, index, size }: { node: Node; index: number; size: number 
     <div
       style={{
         position: "absolute",
-        left: tx,
-        top: ty,
+        left: txStr,
+        top: tyStr,
         transform: "translate(-50%, -50%)",
       }}
     >
       <motion.div
         className={className}
-        initial={{ opacity: 0, x: dx, y: dy, scale: 0.7 }}
+        initial={{ opacity: 0, x: Number(dx), y: Number(dy), scale: 0.7 }}
         whileInView={{ opacity: 1, x: 0, y: 0, scale: 1 }}
         viewport={{ once: true, amount: 0.4 }}
         transition={{

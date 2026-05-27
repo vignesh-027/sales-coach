@@ -8,7 +8,7 @@ Why bake into the image rather than download on first job?
   * Reproducibility. Model versions are pinned to the image tag.
 
 This script runs ONCE at build time (`RUN python download_models.py`).
-Requires HF_TOKEN env var (set from the HUGGINGFACE_TOKEN build-arg) to
+Requires HuggingFace_Token env var (set from the HuggingFace_Token build-arg) to
 download the diarization model — pyannote gates its weights behind a
 HuggingFace "I accept" click.
 """
@@ -21,9 +21,9 @@ from pyannote.audio import Pipeline
 
 
 def main() -> None:
-    hf_token = os.environ.get("HF_TOKEN")
+    hf_token = os.environ.get("HuggingFace_Token")
     if not hf_token:
-        print("ERROR: HF_TOKEN not set. Pass --build-arg HUGGINGFACE_TOKEN=hf_xxx", file=sys.stderr)
+        print("ERROR: HuggingFace_Token not set. Pass --build-arg HuggingFace_Token=hf_xxx", file=sys.stderr)
         sys.exit(1)
 
     # Whisper large-v3-turbo: faster-whisper's CTranslate2-compiled variant.
@@ -42,9 +42,10 @@ def main() -> None:
 
     # pyannote.audio 3.1 speaker diarization. Gated — requires HF token.
     print("Downloading pyannote/speaker-diarization-3.1...")
+    # pyannote.audio 4.x renamed `use_auth_token` → `token`.
     Pipeline.from_pretrained(
         "pyannote/speaker-diarization-3.1",
-        use_auth_token=hf_token,
+        token=hf_token,
     )
 
     print("All models cached.")

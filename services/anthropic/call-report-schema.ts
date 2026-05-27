@@ -24,7 +24,12 @@ export const RUBRIC_AXES: RubricAxis[] = [
   "silence_handling",
 ];
 
-export type MomentLabel =
+// The 9 canonical labels. The LLM is instructed to prefer these. It MAY coin
+// a new snake_case label when no canonical fits a genuinely business-relevant
+// moment (e.g. "predictive_intelligence", "ecosystem_framing"). The schema
+// accepts any short string; UIs that group/filter should treat anything
+// outside CANONICAL_MOMENT_LABELS as "Other".
+export type CanonicalMomentLabel =
   | "state_shift"
   | "pacing_match"
   | "missed_anchor"
@@ -35,7 +40,7 @@ export type MomentLabel =
   | "commitment"
   | "risk";
 
-export const MOMENT_LABELS: MomentLabel[] = [
+export const CANONICAL_MOMENT_LABELS: CanonicalMomentLabel[] = [
   "state_shift",
   "pacing_match",
   "missed_anchor",
@@ -46,6 +51,10 @@ export const MOMENT_LABELS: MomentLabel[] = [
   "commitment",
   "risk",
 ];
+
+// Persisted label is a free-form short string. Normalize before storing.
+export type MomentLabel = string;
+export const MOMENT_LABELS = CANONICAL_MOMENT_LABELS;
 
 export type PlaybookSourceType =
   | "founder_video"
@@ -82,7 +91,9 @@ export interface CallReport {
   rewrites: Array<{
     recording_index: number;
     start_ts_ms: number;
-    client_said: string;
+    client_said?: string;
+    client_said_start_ts_ms?: number;
+    client_said_end_ts_ms?: number;
     original: string;
     rewrite: string;
     rationale: string;
@@ -126,17 +137,10 @@ const PlaybookCitationSchema = z.object({
   end_ts_ms: z.number().int().min(0),
 });
 
-const KeyMomentLabelSchema = z.enum([
-  "state_shift",
-  "pacing_match",
-  "missed_anchor",
-  "installed_certainty",
-  "objection_time",
-  "objection_money",
-  "objection_doubt",
-  "commitment",
-  "risk",
-]);
+// Open vocabulary: prefer one of CANONICAL_MOMENT_LABELS, but allow the LLM
+// to coin a snake_case label when the moment is business-relevant and none of
+// the 9 fit. Server normalizes (lowercase + snake_case) before persist.
+const KeyMomentLabelSchema = z.string().min(1).max(40);
 
 export const CallReportSchema = z.object({
   // call_type added in PROMPT_VERSION 6. Optional so older reports
@@ -173,7 +177,9 @@ export const CallReportSchema = z.object({
       z.object({
         recording_index: z.number().int().min(0),
         start_ts_ms: z.number().int().min(0),
-        client_said: z.string(),
+        client_said: z.string().optional(),
+        client_said_start_ts_ms: z.number().int().min(0).optional(),
+        client_said_end_ts_ms: z.number().int().min(0).optional(),
         original: z.string(),
         rewrite: z.string(),
         rationale: z.string(),
@@ -199,6 +205,32 @@ export const CallReportSchema = z.object({
 });
 
 export type CallReportValidated = z.infer<typeof CallReportSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LLM-FACING SCHEMA (what Claude emits via tool_use)
+//
+// The LLM does NOT emit recording_index / start_ts_ms / client_said directly.
+// Instead it references a server-built `pair_id` and supplies excerpts. The
+// server (materializeRewritesFromPairs) resolves these to the persisted shape
+// above, using real segment timestamps. Keeps the LLM out of the mechanical
+// timestamp / speaker business entirely.
+// ─────────────────────────────────────────────────────────────────────────────
+export const LLMRewriteSchema = z.object({
+  pair_id: z.string().min(1),
+  client_said_excerpt: z.string().min(1),
+  original_excerpt: z.string().min(1),
+  rewrite: z.string().min(1),
+  rationale: z.string().min(1),
+  playbook_source: PlaybookCitationSchema,
+});
+
+export const LLMCallReportSchema = CallReportSchema.extend({
+  // Override rewrites to the LLM shape; everything else stays the same.
+  rewrites: z.array(LLMRewriteSchema).max(8),
+});
+
+export type LLMRewrite = z.infer<typeof LLMRewriteSchema>;
+export type LLMCallReport = z.infer<typeof LLMCallReportSchema>;
 
 
 export const CALL_REPORT_TOOL: Anthropic.Tool = {
@@ -275,17 +307,9 @@ export const CALL_REPORT_TOOL: Anthropic.Tool = {
             end_ts_ms: { type: "integer", minimum: 0 },
             label: {
               type: "string",
-              enum: [
-                "state_shift",
-                "pacing_match",
-                "missed_anchor",
-                "installed_certainty",
-                "objection_time",
-                "objection_money",
-                "objection_doubt",
-                "commitment",
-                "risk",
-              ],
+              maxLength: 40,
+              description:
+                "Prefer one of: state_shift, pacing_match, missed_anchor, installed_certainty, objection_time, objection_money, objection_doubt, commitment, risk. If — and only if — the moment is genuinely business-relevant and none of those 9 captures it, coin a short snake_case label (e.g. predictive_intelligence, ecosystem_framing, state_choice). Do not coin for novelty; default to the 9.",
             },
             quote: {
               type: "string",
@@ -306,29 +330,32 @@ export const CALL_REPORT_TOOL: Anthropic.Tool = {
       },
       rewrites: {
         type: "array",
-        maxItems: 6,
+        maxItems: 8,
         items: {
           type: "object",
           required: [
-            "recording_index",
-            "start_ts_ms",
-            "client_said",
-            "original",
+            "pair_id",
+            "client_said_excerpt",
+            "original_excerpt",
             "rewrite",
             "rationale",
             "playbook_source",
           ],
           properties: {
-            recording_index: { type: "integer", minimum: 0 },
-            start_ts_ms: { type: "integer", minimum: 0 },
-            client_said: {
+            pair_id: {
               type: "string",
               description:
-                "Verbatim words the prospect spoke that the closer was responding to. Must come from the same recording within ~15s before start_ts_ms. If no clearly attributable prospect line exists, omit this rewrite entirely.",
+                "Copy verbatim from a `pair=…` annotation on a CLOSER turn in the transcript. You may only reference pair_ids present in the transcript. Each pair_id may be used at most twice across rewrites.",
             },
-            original: {
+            client_said_excerpt: {
               type: "string",
-              description: "Verbatim line the closer said.",
+              description:
+                "1–2 sentences copied VERBATIM from the CLIENT turn of this pair. Pick the most charged / specific / coachable part of what the client said. Do not paraphrase.",
+            },
+            original_excerpt: {
+              type: "string",
+              description:
+                "1–2 sentences copied VERBATIM from the CLOSER turn of this pair — the actual line you want to rewrite. Do not paraphrase.",
             },
             rewrite: {
               type: "string",

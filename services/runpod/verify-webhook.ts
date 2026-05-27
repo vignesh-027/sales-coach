@@ -5,12 +5,12 @@
 // a shared secret in the webhook URL itself as a query string the
 // dispatcher knows but a random attacker would not.
 //
-// We pass `?secret=<RUNPOD_WEBHOOK_SECRET>` on every webhook URL we
+// We pass `?secret=<RunPod_Webhook_Secret>` on every webhook URL we
 // register at submit time. The callback route extracts and constant-time
-// compares it against process.env.RUNPOD_WEBHOOK_SECRET.
+// compares it against process.env.RunPod_Webhook_Secret.
 
 export function verifyRunPodWebhook(req: Request): boolean {
-  const expected = process.env.RUNPOD_WEBHOOK_SECRET;
+  const expected = process.env.RunPod_Webhook_Secret;
   if (!expected) return false;
   const url = new URL(req.url);
   const got = url.searchParams.get("secret");

@@ -41,12 +41,37 @@ export async function PATCH(
   } catch {
     body = {};
   }
-  if (body.action !== "start") {
+  if (body.action !== "start" && body.action !== "reembed") {
     return NextResponse.json({ error: "unsupported action" }, { status: 400 });
   }
 
   const item = await getKnowledgeItem(id);
   if (!item) return NextResponse.json({ error: "not found" }, { status: 404 });
+
+  // `reembed` forces re-embedding regardless of current process_status.
+  // Powers the admin "Rerun embedding" button shown when chunk_total=0
+  // despite status=done, dim mismatch, or duplicate chunk_index rows.
+  // It runs only if a transcript exists; otherwise there's nothing to embed
+  // and the caller should use action=start to re-ingest from scratch.
+  if (body.action === "reembed") {
+    const existingTranscript = await getTranscript(id);
+    if (!existingTranscript) {
+      return NextResponse.json(
+        { error: "no transcript to embed; use action=start instead" },
+        { status: 400 },
+      );
+    }
+    await updateKnowledgeStatus(id, {
+      process_status: "embedding",
+      process_error: null,
+    });
+    const payload: EmbedTranscriptPayload = { knowledgeItemId: id };
+    const handle = await tasks.trigger<
+      typeof import("@/worker/embed-transcript").embedTranscript
+    >("embed-transcript", payload);
+    return NextResponse.json({ ok: true, runId: handle.id, resumed: "embed" });
+  }
+
   if (
     item.process_status !== "queued" &&
     item.process_status !== "failed" &&

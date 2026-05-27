@@ -35,7 +35,7 @@
 .lp-meta {
   font-family: "JetBrains Mono", monospace;
   font-size: 11px; letter-spacing: 0.05em;
-  text-transform: lowercase; color: var(--ink-2);
+  color: var(--ink-2);
 }
 .lp-root em { font-style: italic; }
 
@@ -62,6 +62,10 @@
   display: inline-block; width: 10px; height: 10px; background: var(--accent);
 }
 .lp-brand-mark.is-visible { opacity: 1; }
+/* When the dark sign-in section is in view the brand mark would disappear
+   against ink-1; flip it to the inverse palette so it stays readable. */
+.lp-brand-mark.is-inverted { color: var(--inv-ink); }
+.lp-brand-mark.is-inverted .lp-ic { background: var(--inv-ink); }
 
 .lp-cta-cell {
   grid-column: 3;
@@ -91,9 +95,13 @@
   white-space: nowrap;
   transform-origin: center;
   will-change: transform;
-  transition: background 250ms ease-out, color 250ms ease-out, border-color 250ms ease-out;
+  transition: background 250ms ease-out, color 250ms ease-out, border-color 250ms ease-out, opacity 350ms ease-out;
 }
 .lp-cta:hover { background: var(--accent); border-color: var(--accent); }
+/* Drop the docked CTA out of the way when the sign-in section is in view —
+   the section has its own primary sign-in button, so the chrome CTA would
+   only repeat itself against a dark background. */
+.lp-cta-cell.is-hidden { opacity: 0; pointer-events: none; }
 .lp-cta .lp-dot {
   width: 6px; height: 6px; border-radius: 50%;
   background: currentColor; opacity: 0.7;
@@ -382,11 +390,25 @@
 /* ---------- sign-in section (dark) ---------- */
 .lp-signin {
   position: relative;
+  min-height: 100vh;
   background: var(--ink-1);
   color: var(--inv-ink);
-  padding: 112px 48px 80px;
+  padding: 112px 48px 40px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
+.lp-signin-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  /* Children stack as flex items, so text-align: center on the wrap doesn't
+     align the fixed-width Google pill. Center each child explicitly. */
+  align-items: center;
+}
+.lp-signin-wrap > * { max-width: 760px; }
 .lp-signin .lp-wash {
   position: absolute; inset: 0;
   background:

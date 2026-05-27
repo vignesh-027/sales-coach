@@ -2,7 +2,7 @@
 // + stop_reason so we can see where the "missing" output tokens go.
 import { anthropic, getClaudeModel } from "../services/anthropic/client";
 import { CALL_REPORT_TOOL } from "../services/anthropic/call-report-schema";
-import { buildUserMessage } from "../services/anthropic/analyze-call";
+import { buildUserMessage, preprocess } from "../services/anthropic/analyze-call";
 import { getCall } from "../services/supabase/queries/calls";
 import { listRecordings } from "../services/supabase/queries/call-recordings";
 import { listCallTranscriptsOrdered } from "../services/supabase/queries/call-transcripts";
@@ -94,7 +94,7 @@ const callId = process.argv[2];
     }),
   );
 
-  const userMessage = buildUserMessage({
+  const analyzeArgs = {
     call: {
       call_type: call.call_type,
       client_name: call.client_name,
@@ -102,7 +102,9 @@ const callId = process.argv[2];
     },
     recordings: recordingsForPrompt,
     playbook: { founder_videos: founderVideos, retrieved_reference_chunks: retrievedReferenceChunks },
-  });
+  };
+  const pre = preprocess(analyzeArgs);
+  const userMessage = buildUserMessage(analyzeArgs, pre);
 
   const model = process.env.DIAG_MODEL ?? (await getClaudeModel());
   console.log("model:", model);

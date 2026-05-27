@@ -392,7 +392,7 @@ function AddInner({ isAdmin }: { isAdmin: boolean }) {
             disabled={!canSubmit}
             onClick={submit}
           >
-            {busy ? "Working…" : "Start coaching"}
+            {busy ? "Working…" : "Start Analysis"}
           </button>
         </div>
       </div>

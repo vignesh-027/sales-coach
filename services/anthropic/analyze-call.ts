@@ -3,14 +3,231 @@ import { anthropic, getClaudeModel } from "./client";
 import {
   CALL_REPORT_TOOL,
   CallReportSchema,
+  LLMCallReportSchema,
   type CallReport,
+  type LLMCallReport,
 } from "./call-report-schema";
+import {
+  mergeIntoTurns,
+  detectCloserSpeaker,
+  labelTurns,
+  buildPairs,
+  resolveExcerptToSegment,
+  renderTurns,
+  norm,
+  type Pair,
+  type Turn,
+} from "./conversation-turns";
 
-export const PROMPT_VERSION = 7;
+export const PROMPT_VERSION = 13;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Token discipline knobs. Applied before the API call so input is always
+// bounded. Tunable; chosen to give Haiku 4.5 ample headroom (200k window).
+// ─────────────────────────────────────────────────────────────────────────────
+const FOUNDER_VIDEO_CHAR_CAP_TOTAL = 24_000; // ~6k tokens combined
+const FOUNDER_VIDEO_CHAR_CAP_PER = 8_000;    // ~2k tokens per video
+const REFERENCE_CHUNKS_CAP = 3;              // was 5
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Anchor key_moments + patterns evidence back to real transcript segments.
+// (Rewrites use the new pair_id materialization path — see
+// materializeRewritesFromPairs.)
+// ─────────────────────────────────────────────────────────────────────────────
+function findSegmentForQuote(
+  segments: TranscriptSegment[],
+  quote: string,
+): TranscriptSegment | null {
+  if (!quote || !segments?.length) return null;
+  const nq = norm(quote);
+  if (nq.length < 8) return null;
+  for (const s of segments) {
+    if (norm(s.text).includes(nq)) return s;
+  }
+  for (let i = 0; i < segments.length; i++) {
+    let acc = "";
+    for (let j = i; j < Math.min(i + 6, segments.length); j++) {
+      acc = acc ? acc + " " + norm(segments[j].text) : norm(segments[j].text);
+      if (acc.includes(nq)) return segments[i];
+    }
+  }
+  const head = nq.slice(0, 60);
+  if (head.length >= 12) {
+    for (const s of segments) {
+      if (norm(s.text).includes(head)) return s;
+    }
+  }
+  return null;
+}
+
+function anchorMomentsAndPatterns(
+  report: CallReport,
+  recordings: AnalyzeCallArgs["recordings"],
+): { anchored: number; missed: number } {
+  const segsByIdx = new Map<number, TranscriptSegment[]>();
+  for (const r of recordings) segsByIdx.set(r.index, r.segments || []);
+  let anchored = 0;
+  let missed = 0;
+
+  for (const m of report.key_moments ?? []) {
+    // Normalize label: lowercase, snake_case, strip non-[a-z0-9_], collapse
+    // repeats, trim to 40 chars. Accepts whatever the LLM emitted (canonical
+    // 9 OR a coined business-relevant label) and produces a consistent form.
+    if (typeof m.label === "string") {
+      m.label = m.label
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_|_$/g, "")
+        .slice(0, 40);
+    }
+    const segs = segsByIdx.get(m.recording_index);
+    if (!segs) continue;
+    const hit = findSegmentForQuote(segs, m.quote);
+    if (hit) {
+      m.start_ts_ms = hit.start_ms;
+      m.end_ts_ms = Math.max(hit.end_ms, hit.start_ms);
+      anchored++;
+    } else {
+      missed++;
+    }
+  }
+
+  // patterns evidence — snap to nearest segment within 5s.
+  for (const p of report.patterns ?? []) {
+    for (const ev of p.evidence ?? []) {
+      const segs = segsByIdx.get(ev.recording_index);
+      if (!segs?.length) continue;
+      let best = segs[0];
+      let bestDist = Math.abs(best.start_ms - ev.start_ts_ms);
+      for (let i = 1; i < segs.length; i++) {
+        const d = Math.abs(segs[i].start_ms - ev.start_ts_ms);
+        if (d < bestDist) {
+          best = segs[i];
+          bestDist = d;
+        }
+      }
+      if (bestDist <= 5_000) ev.start_ts_ms = best.start_ms;
+    }
+  }
+
+  return { anchored, missed };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Materialize LLM-emitted rewrites into the persisted CallReport shape.
+//
+// The LLM emits: pair_id, client_said_excerpt, original_excerpt, rewrite,
+// rationale, playbook_source.
+//
+// We resolve:
+//   pair_id          → server-built (client_turn, closer_turn) adjacency
+//   *_excerpt        → underlying AssemblyAI segment whose text contains it
+//   timestamps       → segment.start_ms / segment.end_ms (never from LLM)
+//
+// Fallbacks:
+//   - Invalid pair_id  → drop the rewrite (cannot recover).
+//   - Excerpt doesn't match within turn → fall back to full turn text +
+//     the turn's first segment (the rewrite stays, just less curated).
+//
+// Per-pair limit: each pair_id is honored at most twice (LLM may legitimately
+// surface two distinct teachable moments in one closer turn).
+// ─────────────────────────────────────────────────────────────────────────────
+function materializeRewritesFromPairs(
+  llmReport: LLMCallReport,
+  pairsByPairId: Map<string, Pair>,
+  segmentsByRec: Map<number, TranscriptSegment[]>,
+): {
+  rewrites: CallReport["rewrites"];
+  dropped_invalid_pair: number;
+  excerpt_fallback_closer: number;
+  excerpt_fallback_client: number;
+} {
+  const out: CallReport["rewrites"] = [];
+  let dropped_invalid_pair = 0;
+  let excerpt_fallback_closer = 0;
+  let excerpt_fallback_client = 0;
+  const useCount = new Map<string, number>();
+
+  for (const lr of llmReport.rewrites ?? []) {
+    const pair = pairsByPairId.get(lr.pair_id);
+    if (!pair) {
+      dropped_invalid_pair++;
+      continue;
+    }
+    const used = useCount.get(lr.pair_id) ?? 0;
+    if (used >= 2) continue; // per-pair cap
+    useCount.set(lr.pair_id, used + 1);
+
+    const segs = segmentsByRec.get(pair.recording_index) ?? [];
+
+    // Resolve closer side
+    let closerSeg = resolveExcerptToSegment(
+      pair.closer_turn,
+      segs,
+      lr.original_excerpt,
+    );
+    let originalText = lr.original_excerpt;
+    if (!closerSeg) {
+      // Fallback: use the turn's first segment + full turn text.
+      closerSeg = segs[pair.closer_turn.segment_indices[0]] ?? null;
+      originalText = pair.closer_turn.text;
+      excerpt_fallback_closer++;
+    }
+    if (!closerSeg) continue; // truly unresolvable
+
+    // Resolve client side
+    let clientSeg = resolveExcerptToSegment(
+      pair.client_turn,
+      segs,
+      lr.client_said_excerpt,
+    );
+    let clientText = lr.client_said_excerpt;
+    if (!clientSeg) {
+      clientSeg = segs[pair.client_turn.segment_indices[0]] ?? null;
+      clientText = pair.client_turn.text;
+      excerpt_fallback_client++;
+    }
+
+    const built: CallReport["rewrites"][number] = {
+      recording_index: pair.recording_index,
+      start_ts_ms: closerSeg.start_ms,
+      original: originalText,
+      rewrite: lr.rewrite,
+      rationale: lr.rationale,
+      playbook_source: lr.playbook_source,
+    };
+    if (clientSeg) {
+      built.client_said = clientText;
+      built.client_said_start_ts_ms = clientSeg.start_ms;
+      built.client_said_end_ts_ms = clientSeg.end_ms;
+    }
+    out.push(built);
+  }
+
+  return {
+    rewrites: out,
+    dropped_invalid_pair,
+    excerpt_fallback_closer,
+    excerpt_fallback_client,
+  };
+}
 
 const SYSTEM_PROMPT = `You are reading a sales call for Antano & Harini's Excellence Installations work — the CTD, BiG, FTM, uP, CPM, EI Solution, SMP journeys (some with Continuity or SLD CI). You are NOT a generic sales coach. You are the founder reading the call and naming what actually moved the prospect (or didn't).
 
 Pick the lens, the moments, and the rubric keys that THIS specific call attempted. Do not default to the same picks across calls.
+
+═══ TRANSCRIPT FORMAT ═══
+
+The <call_transcripts> block uses merged conversation turns, NOT per-sentence segments. Each row is:
+
+  Turn rX_tNNNN | ROLE [mm:ss-mm:ss] [pair=rX_tMMMM]: text
+
+Where:
+- \`rX_tNNNN\` is the turn id (unique within the call).
+- \`ROLE\` is either \`CLIENT\` (the prospect) or \`CLOSER\` (the salesperson). The roles are pre-determined for you; you do NOT need to identify speakers.
+- \`[mm:ss-mm:ss]\` is the time range the turn spans.
+- \`pair=rX_tMMMM\` (only on some CLOSER turns) is the id of the CLIENT turn this closer turn immediately follows. Use it as the rewrite anchor (see HIGHER-LEVERAGE MOVES below).
 
 ═══ CALL TYPE ═══
 
@@ -63,7 +280,7 @@ Hard ban: NEVER pick closing-only keys (commitment landed, sealing the shift, ce
 
 1. **Never correct grammar. Never coach phrasing.** If a rewrite is "say X instead of Y" because Y was awkward, throw it out. Rewrites accelerate the state shift, open deeper discovery, or install certainty — not better sentences.
 2. **Higher-leverage moves, not better wording.** A rewrite must answer one of: What metaphor would have landed? What discovery question would have opened it? What ecosystem framing would have shifted the state? What predictive observation could the closer have named?
-3. **Quote verbatim.** Every \`quote\`, \`client_said\`, and \`original\` field must be the exact words spoken. Never paraphrase.
+3. **Quote verbatim.** Every \`quote\`, \`client_said_excerpt\`, and \`original_excerpt\` field must be exact substrings of the transcript. Never paraphrase.
 4. **Citations are verbatim from the supplied playbook.** Every \`playbook_source\` MUST be one of the chunks supplied in \`<retrieved_reference_chunks>\` or \`<founder_videos>\`. Copy \`title\`, \`source_type\`, \`start_ts_ms\`, \`end_ts_ms\` verbatim from that chunk's metadata. NEVER invent a title or timestamp. Pick the chunk whose content most directly supports THIS specific rewrite. If no supplied chunk genuinely fits a rewrite, OMIT the rewrite entirely — do not force a citation.
 5. **Founder voice.** Direct, present-tense, state-oriented. Sound like Antano or Harini reading this to the closer over coffee. NEVER use: "circle back", "value prop", "pain points", "buying signal", "objection handling", "rapport building", "active listening". These are corporate-sales-coach language and you are not that.
 6. **Top-5 ranking is mandatory and call-type-relevant.** Exactly 5 entries, drawn from the pool matching \`call_type\`. Never reuse the same 5 across calls.
@@ -76,14 +293,24 @@ Hard ban: NEVER pick closing-only keys (commitment landed, sealing the shift, ce
 
 State-layer moments, not logic-layer summaries. A key moment is where the prospect's state shifted, almost shifted, or refused to shift. \`what_happened\` is a state observation, not a transcript paraphrase. \`why_it_matters\` ties it to the installation craft (anchor / pacing / leading / certainty / silence / discovery / predictive intelligence).
 
+For each key_moment, the \`quote\` must be a verbatim substring of a CLIENT or CLOSER turn's text. \`recording_index\` is the \`rX\` number from the turn id. \`start_ts_ms\` / \`end_ts_ms\` will be re-anchored server-side to the actual segment containing the quote, so don't agonize over them — but do supply your best estimate from the turn's time range.
+
+\`label\` — **prefer one of these 9** (in order of how often they fit): \`state_shift\`, \`pacing_match\`, \`missed_anchor\`, \`installed_certainty\`, \`objection_time\`, \`objection_money\`, \`objection_doubt\`, \`commitment\`, \`risk\`. If — and only if — the moment is genuinely business-relevant and none of those 9 captures what happened, coin a short snake_case label of your own (e.g. \`predictive_intelligence\`, \`ecosystem_framing\`, \`state_choice\`, \`magic_words\`, \`silence_held\`). Do NOT coin a new label for novelty's sake. When in doubt, pick the closest of the 9.
+
 ═══ HIGHER-LEVERAGE MOVES (rewrites field) ═══
 
-For each rewrite:
-- \`client_said\` = verbatim prospect line within ~15s before \`start_ts_ms\`. If no clearly attributable prospect line exists, OMIT the entire rewrite.
-- \`original\` = verbatim closer line.
-- \`rewrite\` = a founder-grade craft pointer. Name the metaphor, discovery question, predictive observation, ecosystem framing, or pattern. NOT a script, NOT dialogue, NOT rephrasing. One or two short phrases: what tool, not what words.
-- \`rationale\` = one or two lines: what the original did at logic layer, what the craft pointer does at state layer, why it fits this exact moment. Max 30 words.
-- \`playbook_source\` = verbatim metadata of one supplied chunk that genuinely supports this move (see Hard Rule #4).
+A rewrite is always anchored to a CLIENT → CLOSER pair. The transcript marks every coachable closer turn with \`pair=rX_tMMMM\` — that pair_id refers to the immediately preceding client turn.
+
+For each rewrite (pick 4–6 total across the whole call):
+
+- \`pair_id\` — copy verbatim from a \`pair=…\` annotation on a CLOSER turn in the transcript. You may ONLY reference pair_ids present in the transcript. Each pair_id may be used at most TWICE.
+- \`client_said_excerpt\` — 1–2 sentences copied VERBATIM from the CLIENT turn of that pair. Pick the most charged / specific / coachable part of what the client actually said. If the client turn is short, copy it all. Do NOT paraphrase.
+- \`original_excerpt\` — 1–2 sentences copied VERBATIM from the CLOSER turn of that pair — the actual line you want to rewrite. Do NOT paraphrase.
+- \`rewrite\` — a founder-grade craft pointer. Name the metaphor, discovery question, predictive observation, ecosystem framing, or pattern. NOT a script, NOT dialogue. One or two short phrases: what tool, not what words.
+- \`rationale\` — one or two lines: what the original did at logic layer, what the craft pointer does at state layer, why it fits this exact moment. Max 30 words.
+- \`playbook_source\` — verbatim metadata of one supplied chunk that genuinely supports this move (see Hard Rule #4).
+
+You do NOT emit timestamps, recording_index, speaker labels, or full quotes for rewrites. The server resolves all of that from your pair_id + excerpts.
 
 ═══ PATTERNS ═══
 
@@ -104,16 +331,6 @@ function fmtTs(ms: number): string {
   const m = Math.floor(s / 60);
   const r = s % 60;
   return `${m.toString().padStart(2, "0")}:${r.toString().padStart(2, "0")}`;
-}
-
-function renderSegments(segments: TranscriptSegment[]): string {
-  if (!segments || segments.length === 0) return "(no segments)";
-  return segments
-    .map(
-      (s) =>
-        `Speaker ${s.speaker} [${fmtTs(s.start_ms)}–${fmtTs(s.end_ms)}]: ${s.text}`,
-    )
-    .join("\n");
 }
 
 export interface RetrievedChunk {
@@ -142,7 +359,50 @@ export interface AnalyzeCallArgs {
   };
 }
 
-export function buildUserMessage(args: AnalyzeCallArgs): string {
+// Internal preprocessing result — turns + pairs per recording, plus the
+// flat pair lookup the materializer needs.
+interface Preprocessed {
+  turnsByRec: Map<number, Turn[]>;
+  pairsByRec: Map<number, Pair[]>;
+  pairsByPairId: Map<string, Pair>;
+}
+
+export function preprocess(args: AnalyzeCallArgs): Preprocessed {
+  const turnsByRec = new Map<number, Turn[]>();
+  const pairsByRec = new Map<number, Pair[]>();
+  const pairsByPairId = new Map<string, Pair>();
+  for (const r of args.recordings) {
+    const merged = mergeIntoTurns(r.segments, r.index);
+    const closer = detectCloserSpeaker(merged);
+    labelTurns(merged, closer);
+    const pairs = buildPairs(merged);
+    turnsByRec.set(r.index, merged);
+    pairsByRec.set(r.index, pairs);
+    for (const p of pairs) pairsByPairId.set(p.pair_id, p);
+  }
+  return { turnsByRec, pairsByRec, pairsByPairId };
+}
+
+function trimFounderVideos(
+  videos: AnalyzeCallArgs["playbook"]["founder_videos"],
+): AnalyzeCallArgs["playbook"]["founder_videos"] {
+  let remaining = FOUNDER_VIDEO_CHAR_CAP_TOTAL;
+  return videos.map((v) => {
+    if (remaining <= 0) return { title: v.title, full_text: "(truncated)" };
+    const perCap = Math.min(FOUNDER_VIDEO_CHAR_CAP_PER, remaining);
+    let text = v.full_text;
+    if (text.length > perCap) {
+      text = text.slice(0, perCap) + "\n…(truncated)";
+    }
+    remaining -= text.length;
+    return { title: v.title, full_text: text };
+  });
+}
+
+export function buildUserMessage(
+  args: AnalyzeCallArgs,
+  pre: Preprocessed,
+): string {
   const meta = `<call_metadata>
   call_type: ${args.call.call_type}
   salesperson: ${args.call.salesperson_name}
@@ -151,25 +411,27 @@ export function buildUserMessage(args: AnalyzeCallArgs): string {
 
   const transcripts = `<call_transcripts>
 ${args.recordings
-  .map(
-    (r) =>
-      `  <recording index="${r.index}" duration_sec="${r.duration_sec ?? "unknown"}">\n${renderSegments(
-        r.segments,
-      )
-        .split("\n")
-        .map((l) => `    ${l}`)
-        .join("\n")}\n  </recording>`,
-  )
+  .map((r) => {
+    const turns = pre.turnsByRec.get(r.index) ?? [];
+    const pairs = pre.pairsByRec.get(r.index) ?? [];
+    const body = renderTurns(turns, pairs)
+      .split("\n")
+      .map((l) => `    ${l}`)
+      .join("\n");
+    return `  <recording index="${r.index}" duration_sec="${r.duration_sec ?? "unknown"}">\n${body}\n  </recording>`;
+  })
   .join("\n")}
 </call_transcripts>`;
 
-  const founder = args.playbook.founder_videos
+  const trimmedVideos = trimFounderVideos(args.playbook.founder_videos);
+  const founder = trimmedVideos
     .map(
       (s) =>
         `    <source title=${JSON.stringify(s.title)}>\n${s.full_text}\n    </source>`,
     )
     .join("\n");
   const refChunks = args.playbook.retrieved_reference_chunks
+    .slice(0, REFERENCE_CHUNKS_CAP)
     .map((c) => {
       const ts =
         c.start_ts_ms != null && c.end_ts_ms != null
@@ -180,7 +442,7 @@ ${args.recordings
     .join("\n");
 
   const playbook = `<playbook>
-  <founder_videos note="canon — always present in full">
+  <founder_videos note="canon — truncated for token budget">
 ${founder || "    (none available)"}
   </founder_videos>
   <retrieved_reference_chunks note="top matches from prior journey-closings, retrieved by similarity to this call. Cite by title + timestamp range.">
@@ -198,60 +460,77 @@ export async function runAnalysis(args: AnalyzeCallArgs): Promise<{
   model: string;
   prompt_version: number;
 }> {
-  const userMessage = buildUserMessage(args);
+  const pre = preprocess(args);
+  const userMessage = buildUserMessage(args, pre);
   const model = await getClaudeModel();
 
-  // First attempt.
-  const first = await callClaudeForReport({
+  const totalPairs = pre.pairsByPairId.size;
+  console.log(
+    `[analyze-call] preprocess: turns=${[...pre.turnsByRec.values()].reduce(
+      (a, t) => a + t.length,
+      0,
+    )} pairs=${totalPairs}`,
+  );
+
+  // Single LLM call. No retry loop — the new schema (pair_id + excerpts) is
+  // small and well-constrained; failures now surface as process_error rather
+  // than burning a second full-cost call. If we see > 5% Zod failure rate
+  // post-deploy, re-enable the retry path.
+  const res = await callClaudeForReport({
     model,
     system: SYSTEM_PROMPT,
     messages: [{ role: "user", content: userMessage }],
   });
-  const firstParsed = CallReportSchema.safeParse(first.merged);
-  if (firstParsed.success) {
-    return {
-      report: firstParsed.data as CallReport,
-      input_tokens: first.input_tokens,
-      output_tokens: first.output_tokens,
-      model,
-      prompt_version: PROMPT_VERSION,
-    };
-  }
-
-  // Validation failed. Give Claude one chance to self-correct by feeding the
-  // specific issues back and asking for a fresh, corrected tool_use. Most
-  // transient model slips (missing scalar, wrong enum, oversized rubric)
-  // recover on retry. Bounded to one retry — never loops.
-  const firstIssues = firstParsed.error.issues
-    .slice(0, 10)
-    .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
-    .join("\n");
-  const retryFeedback = `Your previous save_call_report tool_use was rejected because the input did not satisfy the required schema. Specific validation errors:\n${firstIssues}\n\nEmit a fresh, complete save_call_report tool_use that fixes these issues. All other fields and content can stay the same — only correct what the validator flagged. Do not respond in plain text.`;
-
-  const second = await callClaudeForReport({
-    model,
-    system: SYSTEM_PROMPT,
-    messages: [
-      { role: "user", content: userMessage },
-      // Replay the assistant's first (broken) tool_use so it has context.
-      { role: "assistant", content: first.rawContent },
-      { role: "user", content: retryFeedback },
-    ],
-  });
-  const secondParsed = CallReportSchema.safeParse(second.merged);
-  if (!secondParsed.success) {
-    const issues = secondParsed.error.issues
+  const parsed = LLMCallReportSchema.safeParse(res.merged);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
       .slice(0, 6)
       .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
       .join(" | ");
     throw new Error(
-      `Claude returned malformed save_call_report input after one retry. issues=[${issues}]`,
+      `Claude returned malformed save_call_report input. issues=[${issues}]`,
     );
   }
+
+  const segmentsByRec = new Map<number, TranscriptSegment[]>();
+  for (const r of args.recordings) segmentsByRec.set(r.index, r.segments || []);
+
+  // Materialize rewrites from pair_id + excerpts into the persisted shape.
+  const mat = materializeRewritesFromPairs(
+    parsed.data as LLMCallReport,
+    pre.pairsByPairId,
+    segmentsByRec,
+  );
+
+  // Build the persisted report. Everything except rewrites passes through;
+  // rewrites are the materialized list.
+  const persisted: CallReport = {
+    ...(parsed.data as unknown as CallReport),
+    rewrites: mat.rewrites,
+  };
+
+  const mp = anchorMomentsAndPatterns(persisted, args.recordings);
+
+  // Final defense: validate the persisted shape end-to-end.
+  const validated = CallReportSchema.safeParse(persisted);
+  if (!validated.success) {
+    const issues = validated.error.issues
+      .slice(0, 6)
+      .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+      .join(" | ");
+    throw new Error(
+      `Materialized call report failed persistence schema. issues=[${issues}]`,
+    );
+  }
+
+  console.log(
+    `[analyze-call] rewrites kept=${mat.rewrites.length} dropped_invalid_pair=${mat.dropped_invalid_pair} closer_fallback=${mat.excerpt_fallback_closer} client_fallback=${mat.excerpt_fallback_client} moments_anchored=${mp.anchored}/${mp.anchored + mp.missed}`,
+  );
+
   return {
-    report: secondParsed.data as CallReport,
-    input_tokens: first.input_tokens + second.input_tokens,
-    output_tokens: first.output_tokens + second.output_tokens,
+    report: validated.data as CallReport,
+    input_tokens: res.input_tokens,
+    output_tokens: res.output_tokens,
     model,
     prompt_version: PROMPT_VERSION,
   };
@@ -259,16 +538,8 @@ export async function runAnalysis(args: AnalyzeCallArgs): Promise<{
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal: invoke Claude once for a save_call_report tool_use and return the
-// merged input + raw content (the latter is needed if we replay it on retry).
-//
-// max_tokens=16000 covers the worst-case structured output (8 key_moments +
-// 6 rewrites + 5 patterns + summary, each with verbatim quotes and JSON
-// overhead). The old 8000 cap was hit mid-stream on long calls, leaving the
-// tool_use input truncated so only `summary` came through populated.
-//
-// Haiku 4.5 (and likely future models with parallel tool use) sometimes
-// splits one logical save_call_report into multiple tool_use blocks — one
-// per top-level field. We merge them all into a single input object.
+// merged input. Handles the parallel-tool-use case (some models split one
+// logical save_call_report into multiple tool_use blocks).
 // ─────────────────────────────────────────────────────────────────────────────
 async function callClaudeForReport(opts: {
   model: string;
@@ -286,9 +557,6 @@ async function callClaudeForReport(opts: {
     system: opts.system,
     tools: [CALL_REPORT_TOOL],
     tool_choice: { type: "tool", name: "save_call_report" },
-    // The Anthropic SDK accepts the messages shape we pass; cast at the boundary
-    // because we mix string-content and block-array-content turns across the
-    // retry path.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     messages: opts.messages as any,
   });
@@ -311,9 +579,6 @@ async function callClaudeForReport(opts: {
   const merged: Record<string, unknown> = {};
   for (const t of toolUses) {
     for (const [k, v] of Object.entries(t.input as Record<string, unknown>)) {
-      // Sonnet sometimes emits a field as a JSON-encoded string in one block
-      // and as a real array in another. Coerce strings that look like JSON
-      // arrays/objects back to their real type before merging.
       let val: unknown = v;
       if (typeof val === "string") {
         const s = val.trim();
@@ -329,7 +594,6 @@ async function callClaudeForReport(opts: {
       if (Array.isArray(val) && Array.isArray(prev)) {
         merged[k] = [...prev, ...val];
       } else if (Array.isArray(prev) && !Array.isArray(val)) {
-        // NEVER downgrade an array to a scalar/string. Keep the array.
         continue;
       } else {
         merged[k] = val;

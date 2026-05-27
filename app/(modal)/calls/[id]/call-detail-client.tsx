@@ -88,6 +88,8 @@ interface Rewrite {
   recording_index: number;
   start_ts_ms: number;
   client_said?: string;
+  client_said_start_ts_ms?: number;
+  client_said_end_ts_ms?: number;
   original: string;
   rewrite: string;
   rationale: string;
@@ -165,7 +167,17 @@ const NAV_SECTIONS = [
 ];
 
 const PLAYING_LEAD_MS = 250;
-const PLAYING_TRAIL_MS = 8000;
+// Lowered from 8000 → 3000: at 8s, two adjacent moments highlight at the
+// same time and the card-glow lingers well past the audio actually being on
+// that moment. 3s is enough to give a visual "I'm still here" without
+// causing overlap on dense timelines.
+const PLAYING_TRAIL_MS = 3000;
+// Snap-to-segment tolerance for clicked-timestamp jumps (Timeline,
+// Rewrites, Patterns, Scrub markers). If the LLM-supplied ms lands within
+// this distance of a real segment boundary, we snap to that boundary so
+// the audio starts on a sentence — not mid-word. Beyond this we trust the
+// original value (better off-by-a-second than skipping a whole turn).
+const SEGMENT_SNAP_TOLERANCE_MS = 1000;
 
 export default function CallDetailClient({
   id,
@@ -210,6 +222,12 @@ export default function CallDetailClient({
   const [statsSample, setStatsSample] = useState<ChunkSample | null>(null);
   const [statsErr, setStatsErr] = useState<string | null>(null);
   const [showVec, setShowVec] = useState(false);
+  const [rerunning, setRerunning] = useState(false);
+  const [rerunErr, setRerunErr] = useState<string | null>(null);
+  // Bumped after a successful rerun so the polling effect restarts (it
+  // otherwise stops once status === "done"). Without this the detail page
+  // would never see the "embedding" status the API just flipped.
+  const [pollKey, setPollKey] = useState(0);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -279,7 +297,7 @@ export default function CallDetailClient({
       cancelled = true;
       if (timer) clearInterval(timer);
     };
-  }, [id]);
+  }, [id, pollKey]);
 
   const status = data?.call.process_status;
   const showReport = status === "done" && data?.report;
@@ -351,7 +369,8 @@ export default function CallDetailClient({
         } catch {
           /* noop */
         }
-        void el.play().catch(() => undefined);
+        setPlayerPlaying(true);
+        void el.play().catch(() => setPlayerPlaying(false));
       }
     };
     const onPlay = () => setPlayerPlaying(true);
@@ -385,8 +404,38 @@ export default function CallDetailClient({
     setDrawerView("list");
   }, []);
 
+  // Snap an LLM-supplied timestamp to the nearest segment's start_ms so the
+  // audio always starts on a real sentence boundary. Returns the original
+  // ms if no segment is within SEGMENT_SNAP_TOLERANCE_MS (e.g. timestamp
+  // sits squarely inside a long monologue — leaving the user mid-segment is
+  // better than skipping to the next turn 8 seconds away).
+  const snapToSegment = useCallback(
+    (recordingIndex: number, ms: number): number => {
+      const rec = data?.recordings.find(
+        (r) => r.recording_index === recordingIndex,
+      );
+      const segs = rec?.transcript?.segments;
+      if (!segs || segs.length === 0) return ms;
+      let best = segs[0];
+      let bestDist = Math.abs(best.start_ms - ms);
+      for (let i = 1; i < segs.length; i++) {
+        const d = Math.abs(segs[i].start_ms - ms);
+        if (d < bestDist) {
+          best = segs[i];
+          bestDist = d;
+        }
+      }
+      return bestDist <= SEGMENT_SNAP_TOLERANCE_MS ? best.start_ms : ms;
+    },
+    [data],
+  );
+
   const seekTo = useCallback(
     (recordingIndex: number, ms: number) => {
+      // Snap clicked-timestamp jumps to segment boundaries. Scrub-bar drag
+      // bypasses this entirely (handleScrubClick writes to currentTime
+      // directly) so manual scrubbing stays pixel-precise.
+      const target = snapToSegment(recordingIndex, ms);
       // If we're already on this recording and the player is mounted, seek now.
       if (
         selectedRecordingIndex === recordingIndex &&
@@ -396,20 +445,21 @@ export default function CallDetailClient({
       ) {
         const el = playerElRef.current;
         try {
-          el.currentTime = ms / 1000;
+          el.currentTime = target / 1000;
         } catch {
           /* noop */
         }
-        void el.play().catch(() => undefined);
+        setPlayerPlaying(true);
+        void el.play().catch(() => setPlayerPlaying(false));
         return;
       }
       // Otherwise queue the seek and open the drawer at that recording.
-      pendingSeekRef.current = ms;
+      pendingSeekRef.current = target;
       setSelectedRecordingIndex(recordingIndex);
       setDrawerView("player");
       setDrawerOpen(true);
     },
-    [selectedRecordingIndex, drawerOpen, drawerView],
+    [selectedRecordingIndex, drawerOpen, drawerView, snapToSegment],
   );
 
   const isMomentPlaying = useCallback(
@@ -430,6 +480,18 @@ export default function CallDetailClient({
     if (!el) return;
     if (el.paused) void el.play().catch(() => undefined);
     else el.pause();
+  }, []);
+
+  const seekBy = useCallback((deltaMs: number) => {
+    const el = playerElRef.current;
+    if (!el) return;
+    const durSec = Number.isFinite(el.duration) ? el.duration : Infinity;
+    const nextSec = Math.min(
+      durSec,
+      Math.max(0, (el.currentTime || 0) + deltaMs / 1000),
+    );
+    el.currentTime = nextSec;
+    setCurrentTimeMs(Math.round(nextSec * 1000));
   }, []);
 
   const cycleSpeed = useCallback(() => {
@@ -473,6 +535,27 @@ export default function CallDetailClient({
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action: "start" }),
     });
+  }
+
+  // Force a re-embed of the call's existing transcript. Distinct from
+  // `retry()` (which resumes the whole pipeline and skips embed when chunks
+  // already exist). The admin "Rerun embedding" button uses this when chunks
+  // are present but corrupt (wrong dim, duplicates) or status=done but
+  // chunks_total=0.
+  async function rerunEmbed() {
+    const r = await fetch(`/api/calls/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "reembed" }),
+    });
+    if (!r.ok) throw new Error((await r.text()) || `http ${r.status}`);
+    // Optimistically reflect the new server state so the page swaps to the
+    // "embedding" progress UI immediately, even before polling sees it.
+    setData((d) =>
+      d ? { ...d, call: { ...d.call, process_status: "embedding", process_error: null } } : d,
+    );
+    // Restart the data-fetch poller (it stops once status === "done").
+    setPollKey((k) => k + 1);
   }
 
   if (!data) {
@@ -576,21 +659,72 @@ export default function CallDetailClient({
           </button>
         </header>
 
-        {isAdmin && (
+        {isAdmin && (() => {
+          // Show the embedding debug box only when there is something an
+          // admin can act on — i.e. the embedding is missing or broken AND
+          // the pipeline isn't already working on it. Two hide cases:
+          //   (a) embedding is healthy: chunks exist, vectors match the
+          //       expected dim, no duplicates, and status is "done".
+          //   (b) pipeline is mid-flight (queued / transcribing /
+          //       embedding / analyzing) — the progress stepper already
+          //       explains what's happening; clicking rerun here would be
+          //       redundant.
+          const inFlight =
+            status === "queued" ||
+            status === "transcribing" ||
+            status === "embedding" ||
+            status === "analyzing";
+          const embeddingHealthy =
+            stats !== null &&
+            stats.chunks_total > 0 &&
+            (stats.embedding_dims == null ||
+              stats.embedding_dims === VOYAGE_EMBEDDING_DIM) &&
+            stats.duplicate_indexes === 0 &&
+            status === "done";
+          if (embeddingHealthy || inFlight) return null;
+          return (
           <div className="stats-card" style={{ marginTop: 16 }}>
             {statsErr ? (
               <div className="stats-warn">stats unavailable: {statsErr}</div>
             ) : !stats ? (
               <p className="loading-mono">loading embedding stats…</p>
             ) : stats.chunks_total === 0 ? (
-              <p className="loading-mono">
-                no embedding chunks yet
-                {status === "failed"
-                  ? " · processing failed"
-                  : status && status !== "done"
-                    ? ` · ${status}…`
-                    : ""}
-              </p>
+              <>
+                <p className="loading-mono">
+                  no embedding chunks yet
+                  {status === "failed"
+                    ? " · processing failed"
+                    : status && status !== "done"
+                      ? ` · ${status}…`
+                      : ""}
+                </p>
+                {/* Hide the rerun button while the pipeline is mid-flight —
+                    the worker is already running, so a second click would
+                    be confusing. Show it only when there's nothing in
+                    progress that would already produce new chunks. */}
+                {/* Only show the rerun button when the pipeline finished
+                    cleanly but the embedding itself is missing or broken.
+                    If status is "failed", the failure card above already
+                    offers a Retry that re-runs the whole pipeline — a
+                    second button here would compete with it. */}
+                {status === "done" && (
+                  <RerunEmbeddingButton
+                    rerunning={rerunning}
+                    err={rerunErr}
+                    onClick={async () => {
+                      setRerunning(true);
+                      setRerunErr(null);
+                      try {
+                        await rerunEmbed();
+                      } catch (e) {
+                        setRerunErr(e instanceof Error ? e.message : String(e));
+                      } finally {
+                        setRerunning(false);
+                      }
+                    }}
+                  />
+                )}
+              </>
             ) : (
               <>
                 <div className="stats-line">
@@ -613,13 +747,37 @@ export default function CallDetailClient({
                 {((stats.embedding_dims != null &&
                   stats.embedding_dims !== VOYAGE_EMBEDDING_DIM) ||
                   stats.duplicate_indexes > 0) && (
-                  <div className="stats-warn">
-                    {stats.embedding_dims != null &&
-                      stats.embedding_dims !== VOYAGE_EMBEDDING_DIM &&
-                      `expected ${VOYAGE_EMBEDDING_DIM}-d vectors, got ${stats.embedding_dims}. `}
-                    {stats.duplicate_indexes > 0 &&
-                      `${stats.duplicate_indexes} duplicate chunk_index rows.`}
-                  </div>
+                  <>
+                    <div className="stats-warn">
+                      {stats.embedding_dims != null &&
+                        stats.embedding_dims !== VOYAGE_EMBEDDING_DIM &&
+                        `expected ${VOYAGE_EMBEDDING_DIM}-d vectors, got ${stats.embedding_dims}. `}
+                      {stats.duplicate_indexes > 0 &&
+                        `${stats.duplicate_indexes} duplicate chunk_index rows.`}
+                    </div>
+                    {/* Only show the rerun button when the pipeline finished
+                    cleanly but the embedding itself is missing or broken.
+                    If status is "failed", the failure card above already
+                    offers a Retry that re-runs the whole pipeline — a
+                    second button here would compete with it. */}
+                {status === "done" && (
+                      <RerunEmbeddingButton
+                        rerunning={rerunning}
+                        err={rerunErr}
+                        onClick={async () => {
+                          setRerunning(true);
+                          setRerunErr(null);
+                          try {
+                            await rerunEmbed();
+                          } catch (e) {
+                            setRerunErr(e instanceof Error ? e.message : String(e));
+                          } finally {
+                            setRerunning(false);
+                          }
+                        }}
+                      />
+                    )}
+                  </>
                 )}
                 {statsSample && (
                   <>
@@ -660,9 +818,28 @@ export default function CallDetailClient({
               </>
             )}
           </div>
-        )}
+          );
+        })()}
 
-        {isAdmin && <CallRetrievalInset callId={id} />}
+        {isAdmin && (() => {
+          // Retrieval inset is a debug surface tied to the chunks above —
+          // hide it whenever the chunks card is hidden (healthy embedding,
+          // OR pipeline still mid-flight).
+          const inFlight =
+            status === "queued" ||
+            status === "transcribing" ||
+            status === "embedding" ||
+            status === "analyzing";
+          const embeddingHealthy =
+            stats !== null &&
+            stats.chunks_total > 0 &&
+            (stats.embedding_dims == null ||
+              stats.embedding_dims === VOYAGE_EMBEDDING_DIM) &&
+            stats.duplicate_indexes === 0 &&
+            status === "done";
+          if (embeddingHealthy || inFlight) return null;
+          return <CallRetrievalInset callId={id} />;
+        })()}
 
         {status === "failed" && (
           <div className="report-card" style={{ marginTop: 24 }}>
@@ -781,13 +958,20 @@ export default function CallDetailClient({
                 </button>
               </div>
 
+              {/* The media element is hidden in both cases. Our custom
+                  transport (purple play/scrubber) drives playback directly
+                  via the ref. Video files still play their audio track when
+                  the element has display:none; we hide it because the bare
+                  <video> renders as a tall black box (no controls, no poster)
+                  which adds visual noise without surfacing useful frames for
+                  the kind of recordings we ingest. */}
               {selectedRecording.source_format === "video" ? (
                 <video
                   key={selectedRecording.id}
                   src={stableMediaUrl}
                   ref={attachPlayer}
-                  className="rc-video"
                   playsInline
+                  style={{ display: "none" }}
                 />
               ) : (
                 <audio
@@ -799,6 +983,19 @@ export default function CallDetailClient({
               )}
 
               <div className="tp">
+                <button
+                  type="button"
+                  className="tp-seek"
+                  onClick={() => seekBy(-10_000)}
+                  aria-label="Back 10 seconds"
+                  title="Back 10 seconds"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+                    <path d="M3 3v5h5" />
+                  </svg>
+                  <span className="tp-seek-num">10</span>
+                </button>
                 <button
                   type="button"
                   className="tp-play"
@@ -815,6 +1012,19 @@ export default function CallDetailClient({
                       <polygon points="2.5,1 2.5,9 9,5" fill="#fff" />
                     </svg>
                   )}
+                </button>
+                <button
+                  type="button"
+                  className="tp-seek"
+                  onClick={() => seekBy(10_000)}
+                  aria-label="Forward 10 seconds"
+                  title="Forward 10 seconds"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
+                    <path d="M21 3v5h-5" />
+                  </svg>
+                  <span className="tp-seek-num">10</span>
                 </button>
                 <span className="tp-time">
                   <span className="now">{fmtTs(currentTimeMs)}</span>
@@ -846,17 +1056,13 @@ export default function CallDetailClient({
 
               <div className="tx">
                 {selectedRecording.transcript ? (
-                  selectedRecording.transcript.segments.map((s, i) => (
-                    <div key={i} className="tx-row">
-                      <span className="tx-ts">{fmtTs(s.start_ms)}</span>
-                      <span className="tx-text">
-                        {s.speaker && (
-                          <span className="speaker">{s.speaker}</span>
-                        )}
-                        {s.text}
-                      </span>
-                    </div>
-                  ))
+                  <TranscriptList
+                    segments={selectedRecording.transcript.segments}
+                    currentMs={currentTimeMs}
+                    onJump={(ms) =>
+                      seekTo(selectedRecording.recording_index, ms)
+                    }
+                  />
                 ) : (
                   <p className="loading-mono">transcript not ready yet…</p>
                 )}
@@ -1120,7 +1326,23 @@ function RewritesSection({
                 </div>
                 {r.client_said && (
                   <>
-                    <span className="rw-label">Client said</span>
+                    <span className="rw-label">
+                      Client said
+                      {typeof r.client_said_start_ts_ms === "number" && (
+                        <>
+                          {" "}
+                          <JumpBtn
+                            onClick={() =>
+                              onSeek(
+                                r.recording_index,
+                                r.client_said_start_ts_ms as number,
+                              )
+                            }
+                            ts={fmtTs(r.client_said_start_ts_ms)}
+                          />
+                        </>
+                      )}
+                    </span>
                     <p className="rw-quote client">{r.client_said}</p>
                   </>
                 )}
@@ -1183,6 +1405,114 @@ function PatternsSection({
         </div>
       </div>
     </section>
+  );
+}
+
+/* ===== Transcript list with active-segment highlight + auto-scroll =====
+   Pure render component. Picks the active segment via binary-search-ish
+   linear scan (transcripts are O(few hundred) rows — linear is fine).
+   Scrolls the active row into view whenever its index changes — but only
+   if the user hasn't scrolled away from the player area. We use
+   block:'nearest' so it doesn't yank the page if the row is already
+   visible. Clicking any row jumps the audio to that segment's start. */
+
+function TranscriptList({
+  segments,
+  currentMs,
+  onJump,
+}: {
+  segments: Segment[];
+  currentMs: number;
+  onJump: (ms: number) => void;
+}) {
+  const activeIdx = useMemo(() => {
+    if (segments.length === 0) return -1;
+    // Find last segment whose start_ms <= currentMs. If currentMs is before
+    // the first segment, return -1 (nothing active yet).
+    let lo = 0,
+      hi = segments.length - 1,
+      ans = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (segments[mid].start_ms <= currentMs) {
+        ans = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    // Bound: if the "active" segment already ended >5s ago and no later
+    // segment has started, the audio is in a gap — don't highlight stale.
+    if (
+      ans >= 0 &&
+      segments[ans].end_ms != null &&
+      currentMs - segments[ans].end_ms > 5000
+    ) {
+      return -1;
+    }
+    return ans;
+  }, [segments, currentMs]);
+
+  const activeRowRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (activeIdx < 0) return;
+    const el = activeRowRef.current;
+    if (!el) return;
+    // Find the nearest scrollable ancestor (the .tx container) and scroll
+    // ONLY that — never let scrollIntoView bubble up to window/document, or
+    // it will pull unrelated sections (e.g. Rewrites) into view.
+    let parent: HTMLElement | null = el.parentElement;
+    while (parent && parent !== document.body) {
+      const style = getComputedStyle(parent);
+      if (
+        /(auto|scroll)/.test(style.overflowY) &&
+        parent.scrollHeight > parent.clientHeight
+      ) {
+        break;
+      }
+      parent = parent.parentElement;
+    }
+    if (!parent || parent === document.body) return;
+    const elTop = el.offsetTop - parent.offsetTop;
+    const elBottom = elTop + el.offsetHeight;
+    const viewTop = parent.scrollTop;
+    const viewBottom = viewTop + parent.clientHeight;
+    if (elTop < viewTop) {
+      parent.scrollTo({ top: elTop - 8, behavior: "smooth" });
+    } else if (elBottom > viewBottom) {
+      parent.scrollTo({
+        top: elBottom - parent.clientHeight + 8,
+        behavior: "smooth",
+      });
+    }
+  }, [activeIdx]);
+
+  return (
+    <>
+      {segments.map((s, i) => {
+        const isActive = i === activeIdx;
+        return (
+          <div
+            key={i}
+            ref={isActive ? activeRowRef : null}
+            className={`tx-row${isActive ? " is-active" : ""}`}
+          >
+            <button
+              type="button"
+              className="tx-ts"
+              onClick={() => onJump(s.start_ms)}
+              aria-label={`Jump to ${fmtTs(s.start_ms)}`}
+            >
+              {fmtTs(s.start_ms)}
+            </button>
+            <span className="tx-text">
+              {s.speaker && <span className="speaker">{s.speaker}</span>}
+              {s.text}
+            </span>
+          </div>
+        );
+      })}
+    </>
   );
 }
 
@@ -1309,6 +1639,38 @@ function ProgressStepper({
       <p className="progress-hint">
         tap “Listen to call” to play recordings while this runs.
       </p>
+    </div>
+  );
+}
+
+// Small admin-action button shown in the embedding-stats card when the
+// embedding is unhealthy (zero chunks, wrong vector dimensionality, or
+// duplicate chunk_index rows). Clicking it re-kicks the pipeline.
+function RerunEmbeddingButton({
+  rerunning,
+  err,
+  onClick,
+}: {
+  rerunning: boolean;
+  err: string | null;
+  onClick: () => void;
+}) {
+  return (
+    <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+      <button
+        type="button"
+        className="retry-btn-inline"
+        onClick={onClick}
+        disabled={rerunning}
+        style={{ alignSelf: "flex-start" }}
+      >
+        {rerunning ? "Rerunning…" : "Rerun embedding"}
+      </button>
+      {err && (
+        <div className="stats-warn" style={{ opacity: 0.85 }}>
+          rerun failed: {err}
+        </div>
+      )}
     </div>
   );
 }

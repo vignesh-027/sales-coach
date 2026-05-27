@@ -91,7 +91,7 @@ export async function PATCH(
   } catch {
     body = {};
   }
-  if (body.action !== "start") {
+  if (body.action !== "start" && body.action !== "reembed") {
     return NextResponse.json({ error: "unsupported action" }, { status: 400 });
   }
 
@@ -101,6 +101,34 @@ export async function PATCH(
   const recordings = await listRecordings(id);
   if (recordings.length === 0) {
     return NextResponse.json({ error: "no recordings" }, { status: 400 });
+  }
+
+  // `reembed` forces the embed step regardless of current chunk_total / status.
+  // Used by the admin "Rerun embedding" button when the chunk store is corrupt
+  // (zero chunks despite status=done, wrong vector dims, duplicate chunk_index
+  // rows). The regular `start` path skips embed when chunks exist, which is
+  // wrong for this case — that's what this branch fixes.
+  if (body.action === "reembed") {
+    const transcripts = await listCallTranscriptsOrdered(id);
+    if (transcripts.length !== recordings.length) {
+      return NextResponse.json(
+        { error: "transcripts incomplete; use action=start instead" },
+        { status: 400 },
+      );
+    }
+    await updateCallStatus(id, {
+      process_status: "embedding",
+      process_error: null,
+    });
+    const payload: EmbedCallPayload = { callId: id };
+    const handle = await tasks.trigger<
+      typeof import("@/worker/embed-call").embedCall
+    >("embed-call", payload);
+    return NextResponse.json({
+      ok: true,
+      runId: handle.id,
+      resumed: "embed",
+    });
   }
 
   await updateCallStatus(id, { process_error: null });

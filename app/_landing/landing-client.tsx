@@ -20,6 +20,7 @@ export function LandingClient({
 }) {
   const heroRef = useRef<HTMLElement>(null);
   const ghostRef = useRef<HTMLSpanElement>(null);
+  const signinRef = useRef<HTMLDivElement>(null);
 
   // master hero progress: 0 at top, 1 when hero has scrolled fully out the top
   const { scrollYProgress: heroOut } = useScroll({
@@ -72,6 +73,19 @@ export function LandingClient({
     setHintVisible(p < 0.4);
   });
 
+  // Track when the dark sign-in section reaches the top of the viewport.
+  // Once the chrome row (CTA + brand at top:22px) is overlapping the dark
+  // section we hide the CTA (it would just repeat the section's own
+  // button) and invert the brand colour so it stays readable against ink-1.
+  const { scrollYProgress: signinIn } = useScroll({
+    target: signinRef,
+    offset: ["start end", "start start"],
+  });
+  const [overSignin, setOverSignin] = useState(false);
+  useMotionValueEvent(signinIn, "change", (p) => {
+    setOverSignin(p > 0.92);
+  });
+
   function scrollToSignin(e: MouseEvent<HTMLAnchorElement>) {
     e.preventDefault();
     const el = document.getElementById("signin");
@@ -81,12 +95,14 @@ export function LandingClient({
   return (
     <div className="lp-root">
       <div className="lp-chrome">
-        <span className={`lp-brand-mark ${brandVisible ? "is-visible" : ""}`}>
+        <span
+          className={`lp-brand-mark ${brandVisible ? "is-visible" : ""} ${overSignin ? "is-inverted" : ""}`}
+        >
           <span className="lp-ic" />
           Sales Coach
         </span>
         <span />
-        <span className="lp-cta-cell">
+        <span className={`lp-cta-cell ${overSignin ? "is-hidden" : ""}`}>
           {/* Ghost holds the rest position so we always measure it correctly,
               even when the animated CTA is transformed away from rest. */}
           <span ref={ghostRef} className="lp-cta lp-cta--ghost" aria-hidden="true">
@@ -118,7 +134,9 @@ export function LandingClient({
       <KnowledgeScene />
       <PipelineScene />
       <PatternsSection />
-      <SignInSection supabase={supabase} next={next} error={error} />
+      <div ref={signinRef}>
+        <SignInSection supabase={supabase} next={next} error={error} />
+      </div>
     </div>
   );
 }

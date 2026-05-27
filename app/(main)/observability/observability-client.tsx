@@ -252,7 +252,7 @@ export function ObservabilityClient({
             <tr>
               <td>Transcription</td>
               <td>{selectedModels.transcribe}</td>
-              <td>Hard-coded (AssemblyAI)</td>
+              <td>Settings → Configuration</td>
             </tr>
           </tbody>
         </table>

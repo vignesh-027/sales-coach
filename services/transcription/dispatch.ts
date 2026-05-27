@@ -70,9 +70,9 @@ export async function submitTranscription(
   }
 
   if (opt.provider === "runpod") {
-    const runpodSecret = process.env.RUNPOD_WEBHOOK_SECRET;
+    const runpodSecret = process.env.RunPod_Webhook_Secret;
     if (!runpodSecret) {
-      throw new Error("Missing RUNPOD_WEBHOOK_SECRET — required to submit");
+      throw new Error("Missing RunPod_Webhook_Secret — required to submit");
     }
     // RunPod doesn't sign payloads, so we put a shared secret on the
     // webhook URL. The callback route extracts and constant-time compares

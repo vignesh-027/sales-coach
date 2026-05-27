@@ -29,6 +29,7 @@ import tempfile
 import time
 from typing import Any
 
+import pandas as pd
 import requests
 import runpod
 import torch
@@ -53,9 +54,10 @@ def _load_models() -> dict[str, Any]:
         language_code="en",
         device=DEVICE,
     )
+    # pyannote.audio 4.x renamed `use_auth_token` → `token`.
     diarize = Pipeline.from_pretrained(
         "pyannote/speaker-diarization-3.1",
-        use_auth_token=os.environ.get("HF_TOKEN"),
+        token=os.environ.get("HuggingFace_Token"),
     )
     if DEVICE == "cuda":
         diarize.to(torch.device("cuda"))
@@ -123,10 +125,26 @@ def handler(event: dict) -> dict:
         print(f"[whisperx] align: {time.time() - t0:.1f}s")
 
         # 3) Diarization (optional)
+        #
+        # whisperx 3.8.6 dropped the `whisperx.diarize.DiarizationPipeline.compose_segments`
+        # helper that the 3.1 examples used. We call pyannote's Pipeline directly
+        # and convert its Annotation output to the DataFrame shape that
+        # `assign_word_speakers` expects: columns = [segment, label, speaker, start, end].
         if diarize_flag:
             t0 = time.time()
-            diarization = MODELS["diarize"]({"waveform": torch.from_numpy(audio).unsqueeze(0), "sample_rate": 16000})
-            diarize_df = whisperx.diarize.DiarizationPipeline.compose_segments(diarization)
+            diarization = MODELS["diarize"](
+                {"waveform": torch.from_numpy(audio).unsqueeze(0), "sample_rate": 16000}
+            )
+            # pyannote.audio 4.x wraps the Annotation in a DiarizeOutput object
+            # exposing it as `.speaker_diarization`. 3.x returned the Annotation
+            # directly. Unwrap defensively to work with either.
+            annotation = getattr(diarization, "speaker_diarization", diarization)
+            diarize_df = pd.DataFrame(
+                annotation.itertracks(yield_label=True),
+                columns=["segment", "label", "speaker"],
+            )
+            diarize_df["start"] = diarize_df["segment"].apply(lambda s: s.start)
+            diarize_df["end"] = diarize_df["segment"].apply(lambda s: s.end)
             aligned = whisperx.assign_word_speakers(diarize_df, aligned)
             print(f"[whisperx] diarize: {time.time() - t0:.1f}s")
 

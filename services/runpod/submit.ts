@@ -6,7 +6,7 @@
 //
 // Webhook auth: RunPod doesn't itself sign payloads. We pass our own
 // per-request secret as a query param on the webhook URL; the callback
-// route compares it constant-time against RUNPOD_WEBHOOK_SECRET.
+// route compares it constant-time against RunPod_Webhook_Secret.
 
 import { runpodFetch } from "./client";
 

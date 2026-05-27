@@ -8,7 +8,10 @@ import {
 import { getAppSettings } from "@/services/supabase/queries/app-settings";
 import { supabaseAdmin } from "@/services/supabase/client-admin";
 import { VOYAGE_EMBEDDING_MODEL } from "@/services/voyage/client";
-import { DEFAULT_TRANSCRIPTION_MODEL } from "@/services/assemblyai/usage";
+import {
+  DEFAULT_TRANSCRIPTION_MODEL,
+  findTranscriptionOption,
+} from "@/services/transcription/models";
 import { ObservabilityClient } from "./observability-client";
 
 // Read-only — Voyage + Claude + AssemblyAI rollups by calendar month, plus a
@@ -106,7 +109,10 @@ export default async function ObservabilityPage({
         llm: settings.llm_model,
         rerank: settings.rerank_model,
         embed: VOYAGE_EMBEDDING_MODEL,
-        transcribe: DEFAULT_TRANSCRIPTION_MODEL,
+        transcribe:
+          findTranscriptionOption(settings.transcription_model)?.label ??
+          settings.transcription_model ??
+          DEFAULT_TRANSCRIPTION_MODEL,
       }}
     />
   );

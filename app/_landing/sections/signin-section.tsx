@@ -53,8 +53,7 @@ export function SignInSection({
       </div>
 
       <div className="lp-signin-foot">
-        <span className="lp-meta">sales coach · v0.2 · may 2026</span>
-        <span className="lp-meta">set in lora, dm sans, jetbrains mono</span>
+        <span className="lp-meta">sales Coach · Antano & Harini © School of Excellence</span>
       </div>
     </section>
   );

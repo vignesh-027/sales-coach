@@ -10,7 +10,7 @@ large-v3-turbo + pyannote 3.1 diarization on RunPod Serverless GPUs.
 2. Build:
    ```
    docker build \
-     --build-arg HUGGINGFACE_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+     --build-arg HuggingFace_Token=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
      -t <dockerhub-user>/sales-coach-whisperx:v1.0.0 \
      -t <dockerhub-user>/sales-coach-whisperx:dev \
      infrastructure/runpod-whisperx/
@@ -36,9 +36,9 @@ In the RunPod console → **Serverless** → **+ New Endpoint**:
 | FlashBoot | **On** |
 | Idle timeout | `5s` |
 | Execution timeout | `1800s` (30 min) |
-| Container env | `HF_TOKEN=<the same HF token>` |
+| Container env | `HuggingFace_Token=<the same HF token>` |
 
-Copy the endpoint id into `RUNPOD_ENDPOINT_ID` in the app's env.
+Copy the endpoint id into `RunPod_Endpoint_ID` in the app's env.
 
 ## Promotion flow (dev → prod)
 
@@ -52,7 +52,7 @@ Copy the endpoint id into `RUNPOD_ENDPOINT_ID` in the app's env.
 
 Without RunPod, you can invoke the handler locally:
 ```
-docker run --gpus all --rm -e HF_TOKEN=hf_xxx \
+docker run --gpus all --rm -e HuggingFace_Token=hf_xxx \
   <user>/sales-coach-whisperx:dev \
   python -c "from handler import handler; \
     print(handler({'input': {'audio_url': 'https://.../sample.mp3'}}))"

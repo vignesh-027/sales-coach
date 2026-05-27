@@ -37,13 +37,13 @@ export const LLM_OPTIONS: readonly LlmOption[] = [
     cost_per_mtok_output: 15.0,
   },
   {
-    id: "claude-opus-4-1-20250805",
-    label: "Claude Opus 4.1",
+    id: "claude-opus-4-7-latest",
+    label: "Claude Opus 4.7",
     description:
-      "Highest quality, deepest founder-voice fidelity. Slowest, ~15× the cost of Haiku. Use sparingly.",
+      "Highest quality, deepest founder-voice fidelity. Slowest, ~5× the cost of Haiku. Use sparingly.",
     tier: "paid",
-    cost_per_mtok_input: 15.0,
-    cost_per_mtok_output: 75.0,
+    cost_per_mtok_input: 5.0,
+    cost_per_mtok_output: 25.0,
   },
 ] as const;
 

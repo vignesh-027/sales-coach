@@ -2220,6 +2220,15 @@ html:has(.cd-grid) { scroll-behavior: smooth; }
   color: var(--ink-2); text-transform: lowercase;
   padding-top: 2px;
 }
+/* Tag column: keep within its 180px track; long labels wrap inside the chip
+   instead of overflowing into the description column. */
+.tl-row .tag-cell { min-width: 0; }
+.tl-row .tag-cell .tag {
+  max-width: 100%;
+  white-space: normal;
+  word-break: break-word;
+  text-align: left;
+}
 .tl-row .desc {
   color: var(--ink-1);
   font-family: var(--font-dm-sans), system-ui, sans-serif;
@@ -2473,6 +2482,20 @@ html:has(.cd-grid) { scroll-behavior: smooth; }
   transition: color 200ms ease, border-color 200ms ease;
 }
 .tp-speed:hover { color: var(--ink-1); border-color: var(--ink-1); }
+.tp-seek {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: transparent;
+  border: 0.5px solid rgba(10,10,10,0.18);
+  cursor: pointer; color: var(--ink-2);
+  font-family: var(--font-mono), "JetBrains Mono", monospace;
+  font-weight: 500; font-size: 10px;
+  letter-spacing: 0.05em;
+  padding: 5px 8px; border-radius: 999px;
+  transition: color 200ms ease, border-color 200ms ease;
+}
+.tp-seek:hover { color: var(--ink-1); border-color: var(--ink-1); }
+.tp-seek svg { display: block; }
+.tp-seek-num { line-height: 1; }
 
 /* scrubber */
 .scrub {
@@ -2533,14 +2556,32 @@ html:has(.cd-grid) { scroll-behavior: smooth; }
 }
 .tx-row {
   display: grid; grid-template-columns: 56px 1fr;
-  gap: 12px; padding: 8px 0;
+  align-items: start;
+  gap: 12px; padding: 6px 10px;
   border-bottom: 0.5px solid rgba(10,10,10,0.04);
+  transition: background 120ms ease;
+  /* Extend background edge-to-edge inside .tx container. */
+  /* margin: 0 -12px; */
+  border-radius: 4px;
 }
+.tx-row.is-active {
+  background: var(--aub-10);
+}
+.tx-row.is-active .tx-ts { color: var(--ink-1); font-weight: 600; }
 .tx-ts {
+  display: inline-block;
+  background: transparent;
+  border: 0;
+  padding: 0 6px 0 0;
+  margin: 0;
   font-family: var(--font-mono), "JetBrains Mono", monospace;
-  font-size: 11px; color: var(--ink-3);
-  text-transform: lowercase; padding-top: 1px;
+  font-size: 11px; line-height: 21px; color: var(--ink-3);
+  text-transform: lowercase;
+  cursor: pointer;
+  text-align: left;
+  transition: color 120ms ease;
 }
+.tx-ts:hover { color: var(--ink-1); text-decoration: underline; }
 .tx-text {
   font-family: var(--font-dm-sans), system-ui, sans-serif;
   font-size: 14px; color: var(--ink-1); line-height: 1.5;

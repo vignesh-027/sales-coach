@@ -1,15 +1,15 @@
 // Thin wrapper around RunPod's Serverless API. Mirrors aaiFetch().
 //
 // Env:
-//   RUNPOD_API_KEY      — account-wide bearer token from the RunPod console
-//   RUNPOD_ENDPOINT_ID  — the WhisperX serverless endpoint id (per environment)
+//   RunPod_API      — account-wide bearer token from the RunPod console
+//   RunPod_Endpoint_ID  — the WhisperX serverless endpoint id (per environment)
 //
 // Base URL is https://api.runpod.ai/v2/{endpoint_id}. Paths passed here are
 // suffixes like "/run" or "/status/<job_id>".
 
 export function runpodEndpointId(): string {
-  const id = process.env.RUNPOD_ENDPOINT_ID;
-  if (!id) throw new Error("Missing RUNPOD_ENDPOINT_ID");
+  const id = process.env.RunPod_Endpoint_ID;
+  if (!id) throw new Error("Missing RunPod_Endpoint_ID");
   return id;
 }
 
@@ -21,8 +21,8 @@ export async function runpodFetch(
   path: string,
   init: RequestInit = {},
 ): Promise<Response> {
-  const apiKey = process.env.RUNPOD_API_KEY;
-  if (!apiKey) throw new Error("Missing RUNPOD_API_KEY");
+  const apiKey = process.env.RunPod_API;
+  if (!apiKey) throw new Error("Missing RunPod_API");
   const headers = new Headers(init.headers);
   headers.set("authorization", `Bearer ${apiKey}`);
   if (init.body && !headers.has("content-type")) {
