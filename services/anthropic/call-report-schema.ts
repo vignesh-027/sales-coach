@@ -130,11 +130,16 @@ import { z } from "zod";
 // title / source_type / start_ts_ms / end_ts_ms verbatim from a supplied
 // playbook chunk's metadata. Nothing to invent, nothing to omit. If no
 // supplied chunk fits a rewrite, the rewrite is omitted entirely.
+// Timestamps are coerced (the model sometimes emits "1234" as a string) and
+// default to 0 when omitted. `text_document` playbook sources have no real
+// timestamps — requiring them forced the model to invent data and was a
+// recurring validation-failure source. 0 means "no timestamp" for those; the
+// UI already only renders clickable timestamps for video/call sources.
 const PlaybookCitationSchema = z.object({
   title: z.string(),
   source_type: z.enum(["founder_video", "reference_call", "text_document"]),
-  start_ts_ms: z.number().int().min(0),
-  end_ts_ms: z.number().int().min(0),
+  start_ts_ms: z.coerce.number().int().min(0).default(0),
+  end_ts_ms: z.coerce.number().int().min(0).default(0),
 });
 
 // Open vocabulary: prefer one of CANONICAL_MOMENT_LABELS, but allow the LLM
@@ -153,18 +158,18 @@ export const CallReportSchema = z.object({
     outcome: z.enum(["won", "lost", "follow_up_needed", "stalled", "unclear"]),
     deal_health: z.enum(["strong", "mixed", "weak"]),
     rep_performance_rubric: z
-      .record(z.string(), z.number().int().min(1).max(5))
+      .record(z.string(), z.coerce.number().int().min(1).max(5))
       .refine((r) => Object.keys(r).length === 5, {
         message: "rep_performance_rubric must have exactly 5 entries",
       }),
-    duration_minutes_total: z.number(),
+    duration_minutes_total: z.coerce.number(),
   }),
   key_moments: z
     .array(
       z.object({
-        recording_index: z.number().int().min(0),
-        start_ts_ms: z.number().int().min(0),
-        end_ts_ms: z.number().int().min(0),
+        recording_index: z.coerce.number().int().min(0),
+        start_ts_ms: z.coerce.number().int().min(0),
+        end_ts_ms: z.coerce.number().int().min(0),
         label: KeyMomentLabelSchema,
         quote: z.string(),
         what_happened: z.string(),
@@ -175,11 +180,11 @@ export const CallReportSchema = z.object({
   rewrites: z
     .array(
       z.object({
-        recording_index: z.number().int().min(0),
-        start_ts_ms: z.number().int().min(0),
+        recording_index: z.coerce.number().int().min(0),
+        start_ts_ms: z.coerce.number().int().min(0),
         client_said: z.string().optional(),
-        client_said_start_ts_ms: z.number().int().min(0).optional(),
-        client_said_end_ts_ms: z.number().int().min(0).optional(),
+        client_said_start_ts_ms: z.coerce.number().int().min(0).optional(),
+        client_said_end_ts_ms: z.coerce.number().int().min(0).optional(),
         original: z.string(),
         rewrite: z.string(),
         rationale: z.string(),
@@ -194,8 +199,8 @@ export const CallReportSchema = z.object({
         description: z.string(),
         evidence: z.array(
           z.object({
-            recording_index: z.number().int().min(0),
-            start_ts_ms: z.number().int().min(0),
+            recording_index: z.coerce.number().int().min(0),
+            start_ts_ms: z.coerce.number().int().min(0),
           }),
         ),
         playbook_alignment: z.string(),
@@ -369,7 +374,7 @@ export const CALL_REPORT_TOOL: Anthropic.Tool = {
             },
             playbook_source: {
               type: "object",
-              required: ["title", "source_type", "start_ts_ms", "end_ts_ms"],
+              required: ["title", "source_type"],
               description:
                 "Citation to a real chunk from the supplied playbook. Required. Omit the rewrite if no playbook material supports it.",
               properties: {
@@ -378,8 +383,18 @@ export const CALL_REPORT_TOOL: Anthropic.Tool = {
                   type: "string",
                   enum: ["founder_video", "reference_call", "text_document"],
                 },
-                start_ts_ms: { type: "integer", minimum: 0 },
-                end_ts_ms: { type: "integer", minimum: 0 },
+                start_ts_ms: {
+                  type: "integer",
+                  minimum: 0,
+                  description:
+                    "Start time in ms, copied verbatim from a founder_video or reference_call chunk. OMIT for text_document sources (they have no timestamps).",
+                },
+                end_ts_ms: {
+                  type: "integer",
+                  minimum: 0,
+                  description:
+                    "End time in ms, copied verbatim from a founder_video or reference_call chunk. OMIT for text_document sources.",
+                },
               },
             },
           },

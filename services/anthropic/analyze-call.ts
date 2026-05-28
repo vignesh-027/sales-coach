@@ -19,7 +19,7 @@ import {
   type Turn,
 } from "./conversation-turns";
 
-export const PROMPT_VERSION = 13;
+export const PROMPT_VERSION = 14;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Token discipline knobs. Applied before the API call so input is always
@@ -281,7 +281,7 @@ Hard ban: NEVER pick closing-only keys (commitment landed, sealing the shift, ce
 1. **Never correct grammar. Never coach phrasing.** If a rewrite is "say X instead of Y" because Y was awkward, throw it out. Rewrites accelerate the state shift, open deeper discovery, or install certainty — not better sentences.
 2. **Higher-leverage moves, not better wording.** A rewrite must answer one of: What metaphor would have landed? What discovery question would have opened it? What ecosystem framing would have shifted the state? What predictive observation could the closer have named?
 3. **Quote verbatim.** Every \`quote\`, \`client_said_excerpt\`, and \`original_excerpt\` field must be exact substrings of the transcript. Never paraphrase.
-4. **Citations are verbatim from the supplied playbook.** Every \`playbook_source\` MUST be one of the chunks supplied in \`<retrieved_reference_chunks>\` or \`<founder_videos>\`. Copy \`title\`, \`source_type\`, \`start_ts_ms\`, \`end_ts_ms\` verbatim from that chunk's metadata. NEVER invent a title or timestamp. Pick the chunk whose content most directly supports THIS specific rewrite. If no supplied chunk genuinely fits a rewrite, OMIT the rewrite entirely — do not force a citation.
+4. **Citations are verbatim from the supplied playbook.** Every \`playbook_source\` MUST be one of the chunks supplied in \`<retrieved_reference_chunks>\` or \`<founder_videos>\`. Copy \`title\` and \`source_type\` verbatim from that chunk's metadata. For \`founder_video\` and \`reference_call\` sources, also copy \`start_ts_ms\` and \`end_ts_ms\` verbatim. For \`text_document\` sources, OMIT \`start_ts_ms\`/\`end_ts_ms\` entirely — they have no timestamps; do NOT invent them. NEVER invent a title or timestamp. Pick the chunk whose content most directly supports THIS specific rewrite. If no supplied chunk genuinely fits a rewrite, OMIT the rewrite entirely — do not force a citation.
 5. **Founder voice.** Direct, present-tense, state-oriented. Sound like Antano or Harini reading this to the closer over coffee. NEVER use: "circle back", "value prop", "pain points", "buying signal", "objection handling", "rapport building", "active listening". These are corporate-sales-coach language and you are not that.
 6. **Top-5 ranking is mandatory and call-type-relevant.** Exactly 5 entries, drawn from the pool matching \`call_type\`. Never reuse the same 5 across calls.
 7. **deal_health is call-type aware.** Sale_closing: from state trajectory (yes from unshifted state = "weak"; no from someone who shifted = "mixed", not "weak"). Pre-sale: from whether curiosity was created and a real problem surfaced — absence of a commitment ask is NOT a failure. Sale_followup: from whether the relationship deepened and the next step was anchored.
@@ -472,23 +472,79 @@ export async function runAnalysis(args: AnalyzeCallArgs): Promise<{
     )} pairs=${totalPairs}`,
   );
 
-  // Single LLM call. No retry loop — the new schema (pair_id + excerpts) is
-  // small and well-constrained; failures now surface as process_error rather
-  // than burning a second full-cost call. If we see > 5% Zod failure rate
-  // post-deploy, re-enable the retry path.
-  const res = await callClaudeForReport({
-    model,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: "user", content: userMessage }],
-  });
-  const parsed = LLMCallReportSchema.safeParse(res.merged);
-  if (!parsed.success) {
-    const issues = parsed.error.issues
-      .slice(0, 6)
+  // Strict-structure enforcement. The Anthropic API does NOT validate tool
+  // input against input_schema, so we guarantee conformance ourselves:
+  //   1. deterministic repair (deepParseJsonStrings) fixes stringified nested
+  //      objects / arrays the model occasionally emits;
+  //   2. on Zod failure we feed the EXACT validation errors back to the model
+  //      via a tool_result and let it correct itself, up to MAX_ATTEMPTS.
+  // A report that still fails after all attempts throws — it never reaches
+  // the DB or UI in a malformed shape.
+  const MAX_ATTEMPTS = 2;
+  const messages: Array<{
+    role: "user" | "assistant";
+    content: unknown;
+  }> = [{ role: "user", content: userMessage }];
+
+  let parsedData: LLMCallReport | null = null;
+  let input_tokens = 0;
+  let output_tokens = 0;
+  let lastIssues = "";
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const res = await callClaudeForReport({
+      model,
+      system: SYSTEM_PROMPT,
+      messages,
+    });
+    input_tokens += res.input_tokens;
+    output_tokens += res.output_tokens;
+
+    // Layer 1: deterministic repair before validation.
+    const repaired = deepParseJsonStrings(res.merged) as Record<
+      string,
+      unknown
+    >;
+    const parsed = LLMCallReportSchema.safeParse(repaired);
+    if (parsed.success) {
+      parsedData = parsed.data as LLMCallReport;
+      if (attempt > 1) {
+        console.log(`[analyze-call] recovered on retry attempt ${attempt}`);
+      }
+      break;
+    }
+
+    lastIssues = parsed.error.issues
+      .slice(0, 8)
       .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
       .join(" | ");
+    console.warn(
+      `[analyze-call] attempt ${attempt}/${MAX_ATTEMPTS} failed validation: ${lastIssues}`,
+    );
+
+    if (attempt === MAX_ATTEMPTS) break;
+
+    // Layer 3: append the assistant's tool_use + a tool_result carrying the
+    // validation errors, then ask for a corrected call. tool_choice stays
+    // forced, so the next turn is another save_call_report.
+    messages.push({ role: "assistant", content: res.rawContent });
+    messages.push({
+      role: "user",
+      content: res.toolUseIds.map((id, idx) => ({
+        type: "tool_result",
+        tool_use_id: id,
+        is_error: true,
+        content:
+          idx === 0
+            ? `Your save_call_report input failed schema validation with these errors:\n${lastIssues}\n\nCall save_call_report again with the SAME analysis content but corrected structure. Emit every nested field as a real JSON object/array (never a JSON-encoded string). Supply all required fields. For text_document playbook_source citations, omit start_ts_ms/end_ts_ms.`
+            : "Superseded — see the correction request on the first tool_result.",
+      })),
+    });
+  }
+
+  if (!parsedData) {
     throw new Error(
-      `Claude returned malformed save_call_report input. issues=[${issues}]`,
+      `Claude returned malformed save_call_report input after ${MAX_ATTEMPTS} attempts. issues=[${lastIssues}]`,
     );
   }
 
@@ -497,7 +553,7 @@ export async function runAnalysis(args: AnalyzeCallArgs): Promise<{
 
   // Materialize rewrites from pair_id + excerpts into the persisted shape.
   const mat = materializeRewritesFromPairs(
-    parsed.data as LLMCallReport,
+    parsedData,
     pre.pairsByPairId,
     segmentsByRec,
   );
@@ -505,7 +561,7 @@ export async function runAnalysis(args: AnalyzeCallArgs): Promise<{
   // Build the persisted report. Everything except rewrites passes through;
   // rewrites are the materialized list.
   const persisted: CallReport = {
-    ...(parsed.data as unknown as CallReport),
+    ...(parsedData as unknown as CallReport),
     rewrites: mat.rewrites,
   };
 
@@ -529,8 +585,8 @@ export async function runAnalysis(args: AnalyzeCallArgs): Promise<{
 
   return {
     report: validated.data as CallReport,
-    input_tokens: res.input_tokens,
-    output_tokens: res.output_tokens,
+    input_tokens,
+    output_tokens,
     model,
     prompt_version: PROMPT_VERSION,
   };
@@ -541,6 +597,40 @@ export async function runAnalysis(args: AnalyzeCallArgs): Promise<{
 // merged input. Handles the parallel-tool-use case (some models split one
 // logical save_call_report into multiple tool_use blocks).
 // ─────────────────────────────────────────────────────────────────────────────
+// Recursively parse any string that is actually a JSON object/array back into
+// the real structure. The model occasionally serializes a nested field (e.g.
+// `summary`, `rep_performance_rubric`, an array item) as a JSON-encoded string
+// instead of emitting it inline. This deterministically repairs that before
+// Zod validation, so the common malformed-shape case never needs a retry.
+function deepParseJsonStrings(value: unknown, depth = 0): unknown {
+  if (depth > 6) return value;
+  if (typeof value === "string") {
+    const s = value.trim();
+    const looksJson =
+      (s.startsWith("{") && s.endsWith("}")) ||
+      (s.startsWith("[") && s.endsWith("]"));
+    if (looksJson) {
+      try {
+        return deepParseJsonStrings(JSON.parse(s), depth + 1);
+      } catch {
+        return value;
+      }
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => deepParseJsonStrings(v, depth + 1));
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = deepParseJsonStrings(v, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}
+
 async function callClaudeForReport(opts: {
   model: string;
   system: string;
@@ -548,6 +638,7 @@ async function callClaudeForReport(opts: {
 }): Promise<{
   merged: Record<string, unknown>;
   rawContent: unknown;
+  toolUseIds: string[];
   input_tokens: number;
   output_tokens: number;
 }> {
@@ -604,6 +695,7 @@ async function callClaudeForReport(opts: {
   return {
     merged,
     rawContent: res.content,
+    toolUseIds: toolUses.map((t) => t.id),
     input_tokens: res.usage.input_tokens,
     output_tokens: res.usage.output_tokens,
   };

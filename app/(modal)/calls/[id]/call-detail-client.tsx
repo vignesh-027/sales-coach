@@ -200,6 +200,7 @@ export default function CallDetailClient({
   const [confirmText, setConfirmText] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [delErr, setDelErr] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerView, setDrawerView] = useState<"list" | "player">("list");
@@ -530,11 +531,19 @@ export default function CallDetailClient({
   }
 
   async function retry() {
-    await fetch(`/api/calls/${id}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "start" }),
-    });
+    // Guard + loading state: the PATCH + status flip takes a couple seconds,
+    // during which the button is disabled so the user can't fire it repeatedly.
+    if (retrying) return;
+    setRetrying(true);
+    try {
+      await fetch(`/api/calls/${id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "start" }),
+      });
+    } finally {
+      setRetrying(false);
+    }
   }
 
   // Force a re-embed of the call's existing transcript. Distinct from
@@ -851,8 +860,10 @@ export default function CallDetailClient({
               type="button"
               className="retry-btn-inline"
               onClick={retry}
+              disabled={retrying}
+              aria-busy={retrying}
             >
-              Retry
+              {retrying ? "Retrying…" : "Retry"}
             </button>
           </div>
         )}

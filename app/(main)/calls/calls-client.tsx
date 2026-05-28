@@ -95,11 +95,13 @@ function CallCard({
   call,
   onDelete,
   onRetry,
+  retrying,
   isAdmin,
 }: {
   call: CallRow;
   onDelete: (c: CallRow) => void;
   onRetry: (c: CallRow) => void;
+  retrying: boolean;
   isAdmin: boolean;
 }) {
   const done = call.process_status === "done";
@@ -159,13 +161,16 @@ function CallCard({
             <button
               className="retry-btn"
               type="button"
+              disabled={retrying}
+              aria-busy={retrying}
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                if (retrying) return;
                 onRetry(call);
               }}
             >
-              Retry
+              {retrying ? "Retrying…" : "Retry"}
             </button>
           </>
         )}
@@ -288,6 +293,7 @@ export default function CallsClient({
   const [pendingDelete, setPendingDelete] = useState<CallRow | null>(null);
   const [filter, setFilter] = useState<"all" | CallType>("all");
   const [query, setQuery] = useState("");
+  const [retryingId, setRetryingId] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
   async function refresh() {
@@ -354,12 +360,21 @@ export default function CallsClient({
   }, [calls]);
 
   async function retry(c: CallRow) {
-    await fetch(`/api/calls/${c.id}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "start" }),
-    });
-    void refresh();
+    // Guard against double-triggers: ignore repeat clicks while this call's
+    // retry is already in flight. The button is also disabled in the UI, but
+    // this protects against rapid clicks landing before the re-render.
+    if (retryingId === c.id) return;
+    setRetryingId(c.id);
+    try {
+      await fetch(`/api/calls/${c.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "start" }),
+      });
+      await refresh();
+    } finally {
+      setRetryingId(null);
+    }
   }
 
   return (
@@ -512,6 +527,7 @@ export default function CallsClient({
                 call={c}
                 onDelete={setPendingDelete}
                 onRetry={retry}
+                retrying={retryingId === c.id}
                 isAdmin={user.isAdmin}
               />
             ))}

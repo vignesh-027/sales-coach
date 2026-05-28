@@ -133,6 +133,8 @@ export interface ScopedUsageModel {
   provider: UsageProvider;
   kind: UsageKind;
   model: string;
+  /** Number of ledger rows (= successful invocations) for this model. */
+  runs: number;
   input_tokens: number;
   output_tokens: number;
   tokens: number;
@@ -219,12 +221,14 @@ export async function recentScopedUsage(args: {
       provider: r.provider,
       kind: r.kind,
       model: r.model,
+      runs: 0,
       input_tokens: 0,
       output_tokens: 0,
       tokens: 0,
       duration_sec: 0,
       cost_usd: 0,
     };
+    m.runs += 1;
     m.input_tokens += r.input_tokens ?? 0;
     m.output_tokens += r.output_tokens ?? 0;
     m.tokens += r.tokens ?? 0;

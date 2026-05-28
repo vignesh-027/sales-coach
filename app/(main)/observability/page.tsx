@@ -6,6 +6,7 @@ import {
   type ScopedUsageGroup,
 } from "@/services/supabase/queries/model-usage";
 import { getAppSettings } from "@/services/supabase/queries/app-settings";
+import { versionCountsByCall } from "@/services/supabase/queries/call-reports";
 import { supabaseAdmin } from "@/services/supabase/client-admin";
 import { VOYAGE_EMBEDDING_MODEL } from "@/services/voyage/client";
 import {
@@ -39,7 +40,7 @@ export default async function ObservabilityPage({
 
   const [usage, recent, settings] = await Promise.all([
     monthlyUsageByModel({ year, month }),
-    recentScopedUsage({ year, month, limit: 50 }),
+    recentScopedUsage({ year, month, limit: 1000 }),
     getAppSettings(),
   ]);
 
@@ -56,13 +57,14 @@ export default async function ObservabilityPage({
   // Some scope_ids may belong to either set depending on which scope was
   // observed last — query both tables and resolve per-row below.
   const sb = supabaseAdmin();
-  const [callsRes, knowledgeRes] = await Promise.all([
+  const [callsRes, knowledgeRes, versionCounts] = await Promise.all([
     callIds.size > 0
       ? sb.from("calls").select("id, title, client_name").in("id", Array.from(callIds))
       : Promise.resolve({ data: [], error: null }),
     knowledgeIds.size > 0
       ? sb.from("knowledge_items").select("id, title, kind").in("id", Array.from(knowledgeIds))
       : Promise.resolve({ data: [], error: null }),
+    versionCountsByCall(Array.from(callIds)),
   ]);
   const callTitle = new Map<string, string>();
   for (const c of (callsRes.data ?? []) as Array<{
@@ -94,6 +96,7 @@ export default async function ObservabilityPage({
       last_activity: g.last_activity,
       total_cost_usd: g.total_cost_usd,
       models: g.models,
+      versions: isKnowledge ? 0 : versionCounts.get(g.scope_id) ?? 0,
     };
   });
 
@@ -126,6 +129,8 @@ export type ObservabilityRecentRow = {
   last_activity: string;
   total_cost_usd: number;
   models: ScopedUsageGroup["models"];
+  /** Count of stored report versions (calls only; 0 for knowledge). */
+  versions: number;
 };
 
 export type ObservabilityUsageRow = MonthlyUsageRow;

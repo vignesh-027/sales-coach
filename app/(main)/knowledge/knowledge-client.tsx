@@ -263,11 +263,13 @@ function VideoCard({
   item,
   onDelete,
   onRetry,
+  retrying,
   isAdmin,
 }: {
   item: KnowledgeItem;
   onDelete: (it: KnowledgeItem) => void;
   onRetry: (it: KnowledgeItem) => void;
+  retrying: boolean;
   isAdmin: boolean;
 }) {
   const isProcessing =
@@ -310,14 +312,17 @@ function VideoCard({
               <button
                 className="retry-btn-inline"
                 type="button"
+                disabled={retrying}
+                aria-busy={retrying}
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
+                  if (retrying) return;
                   onRetry(item);
                 }}
                 style={{ position: "absolute", top: 12, right: 12 }}
               >
-                Retry
+                {retrying ? "Retrying…" : "Retry"}
               </button>
             )}
           </>
@@ -348,11 +353,13 @@ function AudioRow({
   item,
   onDelete,
   onRetry,
+  retrying,
   isAdmin,
 }: {
   item: KnowledgeItem;
   onDelete: (it: KnowledgeItem) => void;
   onRetry: (it: KnowledgeItem) => void;
+  retrying: boolean;
   isAdmin: boolean;
 }) {
   const done = item.process_status === "done";
@@ -392,13 +399,16 @@ function AudioRow({
         <button
           className="retry-btn-inline"
           type="button"
+          disabled={retrying}
+          aria-busy={retrying}
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
+            if (retrying) return;
             onRetry(item);
           }}
         >
-          Retry
+          {retrying ? "Retrying…" : "Retry"}
         </button>
       )}
       {isAdmin && (
@@ -427,11 +437,13 @@ function TextRow({
   item,
   onDelete,
   onRetry,
+  retrying,
   isAdmin,
 }: {
   item: KnowledgeItem;
   onDelete: (it: KnowledgeItem) => void;
   onRetry: (it: KnowledgeItem) => void;
+  retrying: boolean;
   isAdmin: boolean;
 }) {
   const done = item.process_status === "done";
@@ -466,13 +478,16 @@ function TextRow({
         <button
           className="retry-btn-inline"
           type="button"
+          disabled={retrying}
+          aria-busy={retrying}
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
+            if (retrying) return;
             onRetry(item);
           }}
         >
-          Retry
+          {retrying ? "Retrying…" : "Retry"}
         </button>
       )}
       {isAdmin && (
@@ -604,7 +619,11 @@ export default function KnowledgeClient({
   );
 
   const [retryErr, setRetryErr] = useState<string | null>(null);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
   async function retry(item: KnowledgeItem) {
+    // Guard against double-triggers while a retry for this item is in flight.
+    if (retryingId === item.id) return;
+    setRetryingId(item.id);
     setRetryErr(null);
     setItems((cur) =>
       cur.map((it) =>
@@ -635,7 +654,8 @@ export default function KnowledgeClient({
         }`,
       );
     } finally {
-      void refresh();
+      await refresh();
+      setRetryingId(null);
     }
   }
 
@@ -719,6 +739,7 @@ export default function KnowledgeClient({
                   item={it}
                   onDelete={setPendingDelete}
                   onRetry={retry}
+                  retrying={retryingId === it.id}
                   isAdmin={user.isAdmin}
                 />
               ))}
@@ -771,6 +792,7 @@ export default function KnowledgeClient({
                   item={it}
                   onDelete={setPendingDelete}
                   onRetry={retry}
+                  retrying={retryingId === it.id}
                   isAdmin={user.isAdmin}
                 />
               ))}
@@ -823,6 +845,7 @@ export default function KnowledgeClient({
                   item={it}
                   onDelete={setPendingDelete}
                   onRetry={retry}
+                  retrying={retryingId === it.id}
                   isAdmin={user.isAdmin}
                 />
               ))}

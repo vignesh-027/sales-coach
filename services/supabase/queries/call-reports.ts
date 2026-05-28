@@ -35,21 +35,53 @@ export async function upsertCallReport(input: {
       `upsertCallReport refused: report failed schema validation. issues=[${issues}]`,
     );
   }
-  const { error } = await supabaseAdmin()
-    .from("call_reports")
-    .upsert(
-      {
-        call_id: input.call_id,
-        model: input.model,
-        prompt_version: input.prompt_version,
-        report: parsed.data,
-        input_tokens: input.input_tokens,
-        output_tokens: input.output_tokens,
-        created_at: new Date().toISOString(),
-      },
-      { onConflict: "call_id" },
-    );
+  const now = new Date().toISOString();
+  const sb = supabaseAdmin();
+
+  // 1. Latest report — overwrite the single per-call row.
+  const { error } = await sb.from("call_reports").upsert(
+    {
+      call_id: input.call_id,
+      model: input.model,
+      prompt_version: input.prompt_version,
+      report: parsed.data,
+      input_tokens: input.input_tokens,
+      output_tokens: input.output_tokens,
+      created_at: now,
+    },
+    { onConflict: "call_id" },
+  );
   if (error) throw error;
+
+  // 2. Append a version snapshot. version_no = (max so far) + 1, so the first
+  // analysis is version 1 and the n-th re-analysis is version n. Best-effort:
+  // a versioning failure must not break the analysis hot path (the latest
+  // report is already persisted above).
+  try {
+    const { data: maxRow, error: maxErr } = await sb
+      .from("call_report_versions")
+      .select("version_no")
+      .eq("call_id", input.call_id)
+      .order("version_no", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (maxErr) throw maxErr;
+    const nextVersion = ((maxRow?.version_no as number | undefined) ?? 0) + 1;
+    const { error: insErr } = await sb.from("call_report_versions").insert({
+      call_id: input.call_id,
+      version_no: nextVersion,
+      model: input.model,
+      prompt_version: input.prompt_version,
+      report: parsed.data,
+      input_tokens: input.input_tokens,
+      output_tokens: input.output_tokens,
+      created_at: now,
+    });
+    if (insErr) throw insErr;
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn("[call-reports] version snapshot failed:", e);
+  }
 }
 
 // Per-model Claude token rollup for /admin/observability. Sums input/output
@@ -91,6 +123,25 @@ export async function claudeUsageLastNDays(
     (a, b) =>
       b.input_tokens + b.output_tokens - (a.input_tokens + a.output_tokens),
   );
+}
+
+// Map of call_id → number of stored report versions. Powers the "Versions"
+// column in observability. Calls with no version rows (e.g. analyzed before
+// this table existed) simply won't appear in the map → treat as 0.
+export async function versionCountsByCall(
+  callIds: string[],
+): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  if (callIds.length === 0) return counts;
+  const { data, error } = await supabaseAdmin()
+    .from("call_report_versions")
+    .select("call_id")
+    .in("call_id", callIds);
+  if (error) throw error;
+  for (const r of (data ?? []) as Array<{ call_id: string }>) {
+    counts.set(r.call_id, (counts.get(r.call_id) ?? 0) + 1);
+  }
+  return counts;
 }
 
 export async function getCallReport(

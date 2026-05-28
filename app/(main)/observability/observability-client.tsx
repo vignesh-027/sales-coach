@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
-import { useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import {
   VOYAGE_FREE_TIER_TOKENS_PER_MODEL,
   freeTierStatus,
@@ -94,6 +94,24 @@ export function ObservabilityClient({
   const router = useRouter();
   const pathname = usePathname();
   const [isPending, startTransition] = useTransition();
+
+  // Recent-activity pagination (client-side over the fetched rows).
+  const PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
+  const [pageSize, setPageSize] = useState<number>(25);
+  const [page, setPage] = useState(1);
+  // Reset to first page whenever the dataset or page size changes.
+  useEffect(() => {
+    setPage(1);
+  }, [year, month, pageSize, recent.length]);
+  const pageCount = Math.max(1, Math.ceil(recent.length / pageSize));
+  const clampedPage = Math.min(page, pageCount);
+  const pagedRecent = useMemo(
+    () =>
+      recent.slice((clampedPage - 1) * pageSize, clampedPage * pageSize),
+    [recent, clampedPage, pageSize],
+  );
+  const rangeStart = recent.length === 0 ? 0 : (clampedPage - 1) * pageSize + 1;
+  const rangeEnd = Math.min(clampedPage * pageSize, recent.length);
   const isCurrent = year === currentYear && month === currentMonth;
   const isAtOrAfterCurrent =
     year > currentYear || (year === currentYear && month >= currentMonth);
@@ -351,18 +369,28 @@ export function ObservabilityClient({
           </p>
         ) : (
           <table className="admin-table">
+            <colgroup>
+              <col style={{ width: 150 }} />
+              <col style={{ width: 90 }} />
+              <col />
+              <col style={{ width: 80 }} />
+              <col />
+            </colgroup>
             <thead>
               <tr>
                 <th>When</th>
                 <th>Type</th>
                 <th>Title</th>
+                <th>Versions</th>
                 <th>Models used</th>
               </tr>
             </thead>
             <tbody>
-              {recent.map((r) => (
+              {pagedRecent.map((r) => (
                 <tr key={`${r.scope_id}-${r.last_activity}`}>
-                  <td>{fmtDate(r.last_activity)}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    {fmtDate(r.last_activity)}
+                  </td>
                   <td>{r.kind}</td>
                   <td>
                     {r.kind === "call" ? (
@@ -373,6 +401,7 @@ export function ObservabilityClient({
                       r.title
                     )}
                   </td>
+                  <td>{r.kind === "call" ? r.versions : "—"}</td>
                   <td>
                     <ul style={{ margin: 0, paddingLeft: 16 }}>
                       {r.models.map((m) => (
@@ -383,6 +412,7 @@ export function ObservabilityClient({
                           <strong>
                             {m.provider}/{m.kind}
                           </strong>{" "}
+                          {m.runs > 1 ? `${m.runs} × ` : null}
                           <code style={{ fontSize: 12 }}>{m.model}</code>
                           {m.duration_sec > 0
                             ? ` · ${fmtDuration(m.duration_sec)}`
@@ -405,6 +435,67 @@ export function ObservabilityClient({
               ))}
             </tbody>
           </table>
+        )}
+        {recent.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "flex-end",
+              gap: 16,
+              marginTop: 12,
+              flexWrap: "wrap",
+              fontSize: 13,
+              color: "#555",
+            }}
+          >
+            {/* Page index */}
+            <span>
+              {rangeStart}–{rangeEnd} of {recent.length}
+            </span>
+            {/* Row selection */}
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              Rows per page
+              <select
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value))}
+                style={{
+                  fontSize: 13,
+                  padding: "2px 6px",
+                  border: "0.5px solid var(--hair, rgba(10,10,10,0.2))",
+                  borderRadius: 4,
+                  background: "transparent",
+                  cursor: "pointer",
+                }}
+              >
+                {PAGE_SIZE_OPTIONS.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {/* Navigation */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <ObsIconBtn
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                ariaLabel="Previous page"
+                disabled={clampedPage <= 1}
+              >
+                <ChevronLeft />
+              </ObsIconBtn>
+              <span style={{ minWidth: 90, textAlign: "center" }}>
+                Page {clampedPage} / {pageCount}
+              </span>
+              <ObsIconBtn
+                onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                ariaLabel="Next page"
+                disabled={clampedPage >= pageCount}
+              >
+                <ChevronRight />
+              </ObsIconBtn>
+            </div>
+          </div>
         )}
       </section>
     </main>
